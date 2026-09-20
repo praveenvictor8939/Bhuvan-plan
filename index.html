@@ -220,6 +220,7 @@ textarea{min-height:140px;resize:vertical;line-height:1.45;margin-bottom:10px}
 .auth-logo{width:54px;height:54px;border-radius:16px;background:linear-gradient(145deg,var(--hero-a),var(--hero-b));color:#fff;display:grid;place-items:center;font-weight:900;font-size:24px;margin-bottom:14px}
 .auth-card h1{font-family:"Bricolage Grotesque",Figtree,sans-serif;font-size:28px;margin:0 0 6px}.auth-card .f{margin-top:12px}.auth-msg{min-height:22px;color:var(--warn);font-size:13px;margin:8px 0}.auth-actions{display:grid;gap:9px;margin-top:14px}.auth-user{display:flex;align-items:center;gap:10px}.avatar{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;background:var(--field);font-weight:800}.cal-state{padding:10px 12px;border-radius:12px;background:var(--field);font-size:13px;color:var(--mute);margin:8px 0}.cal-state.ok{background:var(--ok-bg);color:var(--ok)}
 [hidden]{display:none!important}
+.hm{display:flex;align-items:center;gap:4px;flex:none}.hm input{width:54px;padding:7px 6px;text-align:center;font-size:15px}.hm span{color:var(--mute);font-size:14px}
 .auth-msg:not(:empty){background:var(--warn-bg);padding:10px 12px;border-radius:12px;font-size:14px;line-height:1.4}
 </style>
 </head>
@@ -252,7 +253,7 @@ const BHUVAN_FIREBASE_CONFIG = window.BHUVAN_FIREBASE_CONFIG || {
   measurementId:'G-1LB731Y9M6'
 };
 const BHUVAN_GOOGLE_CLIENT_ID = window.BHUVAN_GOOGLE_CLIENT_ID || '931606081709-avur9hpq457ag5mmpnefakapl6n93ev7.apps.googleusercontent.com';
-let authResolved=false, firebaseInit=null, firebaseInitError='', firebaseReady=false, auth=null, currentUser=null, googleToken=null, googleTokenClient=null;
+let authResolved=false, firebaseInit=null, firebaseInitError='', firebaseReady=false, auth=null, currentUser=null, googleToken=null, googleTokenExp=0, googleTokenClient=null, calSilent=false, calRefreshTried=false, calSyncing=false, calSyncTimer=null;
 const firebaseConfigured=()=>BHUVAN_FIREBASE_CONFIG.apiKey && !String(BHUVAN_FIREBASE_CONFIG.apiKey).startsWith('PASTE_') && BHUVAN_FIREBASE_CONFIG.projectId && !String(BHUVAN_FIREBASE_CONFIG.projectId).startsWith('PASTE_');
 function externalScript(src){return new Promise((resolve,reject)=>{const old=[...document.scripts].find(x=>x.src===src);if(old)return resolve();const x=document.createElement('script');x.src=src;x.onload=resolve;x.onerror=()=>reject(new Error('Could not load '+src));document.head.appendChild(x)})}
 async function initFirebaseAuth(){
@@ -400,7 +401,7 @@ async function resetPassword(){
   try{await auth.sendPasswordResetEmail(email);renderAuth('Password reset email sent to '+email+'. Check your inbox and spam folder.');}
   catch(e){renderAuth(e?.code==='auth/invalid-email'?'Please enter a valid email address.':(e?.message||'Could not send reset email.'));}
 }
-async function logout(){try{if(auth)await auth.signOut();googleToken=null}catch(e){}}
+async function logout(){try{if(auth)await auth.signOut();googleToken=null;googleTokenExp=0;calSave({token:'',exp:0,linked:false})}catch(e){}}
 
 /* ================= Cloud planner sync ================= */
 let cloudSaveTimer=null,cloudLoadedUid=null;
@@ -438,18 +439,50 @@ async function initGoogleCalendar(){
   try{
     if(String(BHUVAN_GOOGLE_CLIENT_ID).startsWith('PASTE_'))return;
     await externalScript('https://accounts.google.com/gsi/client');
-    googleTokenClient=google.accounts.oauth2.initTokenClient({client_id:BHUVAN_GOOGLE_CLIENT_ID,scope:'https://www.googleapis.com/auth/calendar.events',callback:r=>{if(r&&r.error){toast('Google Calendar was not connected ('+(r.error_description||r.error)+').');return;}googleToken=r.access_token;toast('Google Calendar connected.');render();},error_callback:e=>{toast(e&&e.type==='popup_closed'?'Google Calendar permission was cancelled.':'Google Calendar popup was blocked. Allow popups and try again.');}});
+    googleTokenClient=google.accounts.oauth2.initTokenClient({client_id:BHUVAN_GOOGLE_CLIENT_ID,scope:'https://www.googleapis.com/auth/calendar.events',
+      callback:r=>{
+        if(r&&r.error){if(!calSilent)toast('Google Calendar was not connected ('+(r.error_description||r.error)+').');calSilent=false;return;}
+        googleToken=r.access_token;googleTokenExp=Date.now()+(Number(r.expires_in)||3600)*1000;
+        calSave({token:googleToken,exp:googleTokenExp,linked:true,uid:currentUser?.uid||''});
+        const quiet=calSilent;calSilent=false;
+        if(!quiet)toast('Google Calendar connected. Syncing your plan...');
+        render();syncGoogleCalendar(quiet);
+      },
+      error_callback:e=>{if(calSilent){calSilent=false;return}toast(e&&e.type==='popup_closed'?'Google Calendar permission was cancelled.':'Google Calendar popup was blocked. Allow popups and try again.');}});
+    calRestore();if(googleToken){render();syncGoogleCalendar(true)}
   }catch(e){console.warn(e)}
 }
+const CAL_KEY='bhuvan.gcal';
+function calStored(){try{return JSON.parse(localStorage.getItem(CAL_KEY)||'null')||{}}catch(e){return {}}}
+function calSave(o){try{localStorage.setItem(CAL_KEY,JSON.stringify(Object.assign(calStored(),o)))}catch(e){}}
+function calLinked(){const c=calStored();return !!c.linked&&(!c.uid||c.uid===(currentUser&&currentUser.uid))}
+function calTokenValid(){return !!googleToken&&googleTokenExp>Date.now()+30000}
+function calRestore(){const c=calStored();if(calLinked()&&c.token&&c.exp>Date.now()+60000){googleToken=c.token;googleTokenExp=c.exp}}
 function connectCalendar(){
   if(!googleTokenClient){toast('Google Calendar is still loading. Check your internet, wait a moment and try again.');return;}
-  googleTokenClient.requestAccessToken({prompt:googleToken?'':'consent',login_hint:currentUser?.email||''});
+  calSilent=false;
+  googleTokenClient.requestAccessToken({prompt:calLinked()?'':'consent',login_hint:currentUser?.email||''});
 }
+function refreshCalendarSilently(){
+  if(!googleTokenClient||!calLinked()||calTokenValid()||calRefreshTried)return;
+  calRefreshTried=true;calSilent=true;
+  try{googleTokenClient.requestAccessToken({prompt:'',login_hint:currentUser?.email||''})}catch(e){calSilent=false}
+}
+function queueCalSync(){
+  if(!calTokenValid())return;
+  clearTimeout(calSyncTimer);calSyncTimer=setTimeout(()=>syncGoogleCalendar(true),15000);
+}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function calendarApi(path,opts={}){
-  if(!googleToken)throw new Error('Connect Google Calendar first.');
-  const r=await fetch('https://www.googleapis.com/calendar/v3/calendars/primary'+path,{...opts,headers:{'Authorization':'Bearer '+googleToken,'Content-Type':'application/json',...(opts.headers||{})}});
-  if(r.status===401){googleToken=null;throw new Error('Google Calendar authorization expired. Connect again.');}
-  if(!r.ok)throw new Error((await r.text()).slice(0,250));return r.json();
+  if(!calTokenValid()&&!googleToken)throw new Error('Connect Google Calendar first.');
+  for(let attempt=0;attempt<4;attempt++){
+    const r=await fetch('https://www.googleapis.com/calendar/v3/calendars/primary'+path,{...opts,headers:{'Authorization':'Bearer '+googleToken,'Content-Type':'application/json',...(opts.headers||{})}});
+    if(r.status===401){googleToken=null;googleTokenExp=0;calSave({token:'',exp:0});throw new Error('Google Calendar access expired. Tap Reconnect Google Calendar.');}
+    if(r.status===429||r.status===403){const t=await r.text();if(/rate|quota/i.test(t)&&attempt<3){await sleep(1500*(attempt+1));continue}throw new Error(t.slice(0,250))}
+    if(!r.ok)throw new Error((await r.text()).slice(0,250));
+    if(r.status===204)return null;
+    const txt=await r.text();return txt?JSON.parse(txt):null;
+  }
 }
 function plannerCalendarEvents(){
   const out=[];const now=new Date();const ex=examDate();const end=ex||new Date(now.getTime()+90*DAY);
@@ -464,17 +497,36 @@ function plannerCalendarEvents(){
   }
   return out;
 }
-async function syncGoogleCalendar(){
-  if(!googleToken)return connectCalendar();
+async function syncGoogleCalendar(quiet){
+  quiet=quiet===true;
+  if(calSyncing)return;
+  if(!calTokenValid()){if(!quiet)connectCalendar();return}
+  calSyncing=true;
   try{
-    const events=plannerCalendarEvents();let made=0;
-    // Remove previously-created Bhuvan events in the sync window, then recreate current plan.
-    const timeMin=new Date();const timeMax=new Date(timeMin.getTime()+120*DAY);
-    const old=await calendarApi(`/events?singleEvents=true&timeMin=${encodeURIComponent(timeMin.toISOString())}&timeMax=${encodeURIComponent(timeMax.toISOString())}&privateExtendedProperty=${encodeURIComponent('bhuvanPlanner=true')}&maxResults=2500`);
-    for(const e of old.items||[])await calendarApi('/events/'+encodeURIComponent(e.id),{method:'DELETE'});
-    for(const e of events){await calendarApi('/events',{method:'POST',body:JSON.stringify({summary:e.title,description:'Bhuvan Planner study session',start:{dateTime:e.start},end:{dateTime:e.end},extendedProperties:{private:{bhuvanPlanner:'true',plannerId:e.id}}})});made++;}
-    toast(`${made} study sessions synced to Google Calendar.`);
-  }catch(e){console.error(e);toast(e?.message||'Google Calendar sync failed.');}
+    const events=plannerCalendarEvents();
+    const sig=String(hashCode(JSON.stringify(events.map(e=>[e.id,e.start,e.end,e.title]))));
+    if(quiet&&calStored().sig===sig)return;
+    const day0=new Date();day0.setHours(0,0,0,0);const timeMax=new Date(day0.getTime()+150*DAY);
+    const old=await calendarApi(`/events?singleEvents=true&timeMin=${encodeURIComponent(day0.toISOString())}&timeMax=${encodeURIComponent(timeMax.toISOString())}&privateExtendedProperty=${encodeURIComponent('bhuvanPlanner=true')}&maxResults=2500`);
+    const keyOf=(id,st,en,ti)=>`${id}|${new Date(st).getTime()}|${new Date(en).getTime()}|${ti}`;
+    const want=new Map(events.map(e=>[keyOf(e.id,e.start,e.end,e.title),e]));
+    const have=new Set();let made=0,removed=0;
+    for(const o of (old&&old.items)||[]){
+      const pv=(o.extendedProperties&&o.extendedProperties.private)||{};
+      const k=keyOf(pv.plannerId||'',(o.start&&o.start.dateTime)||'',(o.end&&o.end.dateTime)||'',o.summary||'');
+      if(pv.rv==='2'&&want.has(k)&&!have.has(k)){have.add(k);continue}
+      await calendarApi('/events/'+encodeURIComponent(o.id),{method:'DELETE'});removed++;
+    }
+    for(const [k,e] of want){
+      if(have.has(k))continue;
+      await calendarApi('/events',{method:'POST',body:JSON.stringify({summary:e.title,description:'Bhuvan Planner study session',reminders:{useDefault:false,overrides:[{method:'popup',minutes:0},{method:'popup',minutes:10}]},start:{dateTime:e.start},end:{dateTime:e.end},extendedProperties:{private:{bhuvanPlanner:'true',plannerId:e.id,rv:'2'}}})});
+      made++;await sleep(120);
+    }
+    calSave({sig});
+    if(!quiet)toast(`Google Calendar synced: ${want.size} study sessions (${made} added, ${removed} removed).`);
+    else if(made||removed)toast(`Google Calendar updated (${made} added, ${removed} removed).`);
+  }catch(e){console.error(e);if(!quiet)toast(e?.message||'Google Calendar sync failed.');}
+  finally{calSyncing=false;render()}
 }
 /* ================= helpers ================= */
 const KEY='studyplanner.v1', DAY=864e5;
@@ -487,7 +539,9 @@ const at=(k,hm)=>{const [y,m,d]=k.split('-').map(Number),[h,mi]=hm.split(':').ma
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const sum=a=>a.reduce((x,t)=>x+t.mins,0);
 const fmtT=hm=>{const [h,m]=hm.split(':').map(Number);return `${((h+11)%12)+1}:${pad(m)} ${h>=12?'PM':'AM'}`};
-const fmtDur=m=>m<=0?'0h':m%60===0?`${m/60}h`:m<60?`${m}m`:`${+(m/60).toFixed(1)}h`;
+const fmtDur=m=>m<=0?'0h':m%60===0?`${m/60}h`:m<60?`${m}m`:`${Math.floor(m/60)}h ${m%60}m`;
+const durFields=(mins,attrs='')=>{mins=Math.max(0,Math.round(mins));return `<span class="hm"><input type="number" min="0" inputmode="numeric" value="${Math.floor(mins/60)}" ${attrs} data-p="h" aria-label="Hours"><span>h</span><input type="number" min="0" max="59" inputmode="numeric" value="${mins%60}" ${attrs} data-p="m" aria-label="Minutes"><span>m</span></span>`};
+const readDur=box=>{if(!box)return 0;const h=parseInt($('[data-p="h"]',box).value)||0,m=parseInt($('[data-p="m"]',box).value)||0;return h*60+Math.min(59,Math.max(0,m))};
 const dayLabel=k=>{const t=new Date(),tk=dk(t),nk=dk(new Date(t.getFullYear(),t.getMonth(),t.getDate()+1));
   if(k===tk)return 'Today';if(k===nk)return 'Tomorrow';
   const d=at(k,'00:00');return `${d.toLocaleDateString(undefined,{weekday:'short'})} ${d.getDate()} ${d.toLocaleDateString(undefined,{month:'short'})}`};
@@ -501,7 +555,7 @@ const DEFAULTS=()=>({setup:false,mode:'auto',revDays:2,defHours:1,sound:true,not
   front:{header:true,headerText:'',examCountdown:true,schedule:true,dateTime:true},
   lockDisplay:{enabled:false,displayEnabled:true,notifications:true,alarmSound:true,showExam:true,showPercent:true,showToday:true,showNext:true}});
 function load(){try{const r=localStorage.getItem(KEY);return r?JSON.parse(r):null}catch(e){return null}}
-function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){};try{syncNativePlannerState()}catch(e){};queueCloudSave()}
+function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){};try{syncNativePlannerState()}catch(e){};queueCloudSave();try{queueCalSync()}catch(e){}}
 let S=Object.assign(DEFAULTS(),load()||{});
 S.exam=S.exam&&typeof S.exam==='object'?S.exam:DEFAULTS().exam;
 S.slots=Array.isArray(S.slots)&&S.slots.length?S.slots:DEFAULTS().slots;
@@ -721,7 +775,7 @@ function planRow(t){
   const where=t.done?'<span class="chip ok">Done</span>':S.mode==='auto'
     ?`<div class="row wrap" style="gap:6px"><span class="chip">${esc(slotLabel(t.slot))}</span><button class="flexbtn" data-a="flexible" data-id="${t.id}">Flexible time</button></div>`
     :`<div class="row wrap" style="gap:6px"><select class="slotsel" data-c="setslot" data-id="${t.id}" aria-label="Slot for ${esc(t.title)}">${slotOptions(t.slot)}</select><button class="flexbtn" data-a="flexible" data-id="${t.id}">Flexible time</button></div>`;
-  return `<div class="trow${t.done?' done':''}">${chk(t)}<div class="tmain"><div class="ttl">${esc(t.title)}</div><div class="tsub">${where}${t.moved&&!t.done?`<span class="chip warn">Carried over${t.moved>1?' x'+t.moved:''}</span>`:''}</div></div><label class="hrs"><input type="number" min="0.25" step="0.25" inputmode="decimal" value="${+(t.mins/60).toFixed(2)}" data-c="hours" data-id="${t.id}" aria-label="Hours for ${esc(t.title)}"><span>h</span></label><button class="icon${armed===t.id?' danger':''}" data-a="del" data-id="${t.id}" aria-label="Delete ${esc(t.title)}">${armed===t.id?'Delete?':'&times;'}</button></div>`;
+  return `<div class="trow${t.done?' done':''}">${chk(t)}<div class="tmain"><div class="ttl">${esc(t.title)}</div><div class="tsub">${where}${t.moved&&!t.done?`<span class="chip warn">Carried over${t.moved>1?' x'+t.moved:''}</span>`:''}</div></div>${durFields(t.mins,`data-c="dur" data-id="${t.id}"`)}<button class="icon${armed===t.id?' danger':''}" data-a="del" data-id="${t.id}" aria-label="Delete ${esc(t.title)}">${armed===t.id?'Delete?':'&times;'}</button></div>`;
 }
 function openFlexible(id){
   const t=S.topics.find(x=>x.id===id);if(!t)return;
@@ -771,12 +825,12 @@ function planView(){
               :fin?`<p class="mute sm" style="margin:6px 0 0">The plan finishes ${esc(dayLabel(dk(fin)))}${free!==null&&free>=0?`, leaving ${free} day${free===1?'':'s'} before the exam for revision`:''}.</p>`:'')+
       (auto?`<div style="margin-top:10px"><button class="btn" data-a="autoplan">Rebuild plan</button></div>`:'')+'</div>';
   }
-  h+=`<div class="card"><h3>Add syllabus</h3><p class="mute sm">One topic per line. Start a subject with # and add a time such as "- 1.5h" at the end of a line if you know it.</p>
+  h+=`<div class="card"><h3>Add syllabus</h3><p class="mute sm">One topic per line. Start a subject with # and add a time such as "- 1.5h", "- 45m" or "- 1h 30m" at the end of a line if you know it.</p>
     <textarea id="draft" placeholder="# Polity&#10;Fundamental Rights - 1.5h&#10;Directive Principles">${esc(draft)}</textarea>
-    <label class="f" style="max-width:220px">Default hours per topic<input type="number" min="0.25" step="0.25" inputmode="decimal" value="${S.defHours}" data-c="set" data-k="defHours"></label>
+    <div class="f"><label>Default time per topic</label>${durFields(Math.round((S.defHours||1)*60),'data-c="durDef"')}</div>
     <div class="row wrap"><button class="btn pri" data-a="addSyllabus">Add topics</button><button class="btn" data-a="upload">Upload PDF / Word / Excel / JPG</button><button class="btn" data-a="sample">Try a sample</button></div>
     <p class="mute sm" style="margin:10px 0 0">Supports PDF, Word (.docx), Excel (.xlsx/.xls/.csv), JPG/JPEG/PNG, TXT and Markdown. English & Tamil text are supported.</p></div>`;
-  h+=`<div class="card"><h3>Add one topic</h3><div class="f2"><label class="f">Subject<input id="one-sub" placeholder="General Studies"></label><label class="f">Hours<input id="one-hrs" type="number" min="0.25" step="0.25" inputmode="decimal" value="${S.defHours}"></label></div><label class="f">Topic<input id="one-title" placeholder="e.g. Indian Constitution"></label><button class="btn" data-a="addOne">Add topic</button></div>`;
+  h+=`<div class="card"><h3>Add one topic</h3><div class="f2"><label class="f">Subject<input id="one-sub" placeholder="General Studies"></label><div class="f"><label>Time (hours / minutes)</label><span id="one-dur">${durFields(Math.round((S.defHours||1)*60))}</span></div></div><label class="f">Topic<input id="one-title" placeholder="e.g. Indian Constitution"></label><button class="btn" data-a="addOne">Add topic</button></div>`;
   if(S.topics.length){
     h+='<h2>Topics</h2>';
     for(const [sub,T] of subjects()){
@@ -814,9 +868,9 @@ function settingsView(){
   let h='<h2>Settings</h2>';
   h+=`<div class="card"><h3>Account & Google Calendar</h3>
     <div class="auth-user"><div class="avatar">${esc((currentUser?.email||'U').slice(0,1).toUpperCase())}</div><div style="flex:1;min-width:0"><b>${esc(currentUser?.email||'Not signed in')}</b><div class="mute sm">Planner account</div></div></div>
-    <div class="cal-state ${googleToken?'ok':''}">${googleToken?'Google Calendar connected':'Google Calendar not connected'}</div>
-    <div class="row wrap"><button class="btn" data-a="connectCalendar">${googleToken?'Reconnect Google Calendar':'Connect Google Calendar'}</button><button class="btn" data-a="syncCalendar">Sync planner</button><button class="btn" data-a="logout">Sign out</button></div>
-    <p class="mute sm" style="margin-top:10px">Planner sessions are created in your primary Google Calendar. Sync replaces only events previously created by Bhuvan Planner.</p>
+    <div class="cal-state ${calTokenValid()?'ok':''}">${calTokenValid()?'Google Calendar connected':calLinked()?'Google Calendar linked. Tap Reconnect to refresh access.':'Google Calendar not connected'}</div>
+    <div class="row wrap"><button class="btn" data-a="connectCalendar">${calLinked()?'Reconnect Google Calendar':'Connect Google Calendar'}</button><button class="btn" data-a="syncCalendar">Sync planner</button><button class="btn" data-a="logout">Sign out</button></div>
+    <p class="mute sm" style="margin-top:10px">Planner sessions are created in your primary Google Calendar. Sessions already synced stay in Google Calendar and keep alerting you even when this app is closed. Sync only changes events created by Bhuvan Planner.</p>
   </div>`;
   h+=`<div class="card"><h3>Exam</h3><label class="f">Exam name<input value="${esc(S.exam.name)}" placeholder="e.g. Group 4" data-c="set" data-k="exam.name"></label><label class="f">Exam date and time<input type="datetime-local" value="${esc(S.exam.date)}" data-c="set" data-k="exam.date"></label></div>`;
   h+=`<div class="card"><h3>Study slots</h3><p class="mute sm">These repeat every day. Total: ${fmtDur(S.slots.reduce((a,s)=>a+(at('2000-01-01',s.end)-at('2000-01-01',s.start))/6e4,0))} a day.</p>${S.slots.map(s=>`<div class="slotrow"><input value="${esc(s.label)}" aria-label="Slot name" data-c="slotf" data-id="${s.id}" data-k="label"><input type="time" value="${s.start}" aria-label="Start time" data-c="slotf" data-id="${s.id}" data-k="start"><input type="time" value="${s.end}" aria-label="End time" data-c="slotf" data-id="${s.id}" data-k="end"><button class="icon" data-a="delSlot" data-id="${s.id}" aria-label="Remove ${esc(s.label)}">&times;</button></div>`).join('')}${S.slots.length<4?'<button class="btn" data-a="addSlot">Add a slot</button>':''}
@@ -825,10 +879,11 @@ function settingsView(){
     <label class="sw">Notifications<input type="checkbox" data-c="flag" data-k="notify" ${S.notify?'checked':''}><span class="tg"></span></label>
     <label class="sw">Alarm sound<input type="checkbox" data-c="lockFlag" data-k="alarmSound" ${S.lockDisplay.alarmSound!==false?'checked':''}><span class="tg"></span></label>
     <label class="f">Alarm tone<select data-c="alarmTone"><option value="tone1" ${S.alarmTone==='tone1'?'selected':''}>Default tone 1</option><option value="tone2" ${S.alarmTone==='tone2'?'selected':''}>Default tone 2</option><option value="custom" ${S.alarmTone==='custom'?'selected':''}>My audio file</option></select></label>
-    <div class="row wrap"><button class="btn" data-a="chooseAlarmFile">Choose audio file</button><button class="btn" data-a="testTone">Test selected tone</button></div>
+    <label class="f">Alarm length<select data-c="alarmSecs">${[10,15,20,30,60].map(n=>`<option value="${n}" ${(Number(S.alarmSecs)||15)===n?'selected':''}>${n} seconds</option>`).join('')}</select></label>
+    <div class="row wrap"><button class="btn" data-a="chooseAlarmFile">Choose audio file</button><button class="btn" data-a="testTone">Test selected tone</button><button class="btn" data-a="stopAlarm">Stop alarm</button></div>
     ${S.alarmFileName?`<p class="sm mute">Selected: ${esc(S.alarmFileName)}</p>`:''}
     ${S.notify&&notifyState==='denied'?'<p class="sm" style="color:var(--warn)">Notifications are blocked in browser settings. In the Android APK, allow notification permission when requested.</p>':''}
-    <p class="mute sm">Notifications are scheduled from your study dates and times. The Android APK should use native local notifications so reminders continue when the app is closed or the screen is locked.</p>
+    <p class="mute sm">Alerts ring and appear in your phone\'s notification bar while the app is open or recently used. For reminders when the app is fully closed, turn on Google Calendar sync below: Google Calendar rings your study sessions even when this app is closed.</p>
     <button class="btn" data-a="testAlert">Test sound and alert</button><button class="btn" data-a="syncAlarms">Enable / refresh alarms</button></div>`;
   h+=`<div class="card"><h3>Lock screen & display</h3>
     <label class="sw">Lock-screen display<input type="checkbox" data-c="lockFlag" data-k="enabled" ${S.lockDisplay.enabled?'checked':''}><span class="tg"></span></label>
@@ -926,8 +981,8 @@ let toastT;
 function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('on');clearTimeout(toastT);toastT=setTimeout(()=>t.classList.remove('on'),3200)}
 let banT;
 function banner(title,body){
-  const b=$('#banner');b.innerHTML=`<div><b>${esc(title)}</b><span>${esc(body||'')}</span></div><button data-a="dismissBanner">Dismiss</button>`;b.hidden=false;
-  clearTimeout(banT);banT=setTimeout(()=>b.hidden=true,20000);
+  const b=$('#banner');b.innerHTML=`<div><b>${esc(title)}</b><span>${esc(body||'')}</span></div><button data-a="dismissBanner">Stop</button>`;b.hidden=false;
+  clearTimeout(banT);banT=setTimeout(()=>{b.hidden=true;stopAlarm()},Math.max(20000,(Number(S.alarmSecs)||15)*1000+1500));
 }
 
 /* ================= sound and alerts ================= */
@@ -935,12 +990,26 @@ let ac=null;
 function unlockAudio(){try{ac=ac||new (window.AudioContext||window.webkitAudioContext)();if(ac.state==='suspended')ac.resume()}catch(e){}}
 function playTone(freqs=[659.25,783.99,987.77,1318.51],speed=.2){
   unlockAudio();if(!ac)return;try{let t=ac.currentTime+.05;for(const f of freqs){const o=ac.createOscillator(),g=ac.createGain();o.type='sine';o.frequency.value=f;g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(.3,t+.03);g.gain.exponentialRampToValueAtTime(.0001,t+Math.max(.18,speed*1.8));o.connect(g);g.connect(ac.destination);o.start(t);o.stop(t+Math.max(.22,speed*2));t+=speed;}}catch(e){}}
-function playSelectedTone(){
+function toneOnce(){
   if(S.alarmTone==='tone2')return playTone([523.25,659.25,783.99,1046.5],.26);
-  if(S.alarmTone==='custom'&&S.alarmFileData){try{const a=new Audio(S.alarmFileData);a.volume=.9;a.play().catch(()=>{});return}catch(e){}}
   playTone([659.25,783.99,987.77,1318.51],.2);
 }
-function chime(){playSelectedTone()}
+let alarmStopFn=null;
+function stopAlarm(){try{alarmStopFn&&alarmStopFn()}catch(e){}alarmStopFn=null;try{navigator.vibrate&&navigator.vibrate(0)}catch(e){}}
+function ringAlarm(secs){
+  stopAlarm();
+  const dur=Math.max(10,Number(secs||S.alarmSecs)||15)*1000,end=Date.now()+dur;
+  let iv=null,audio=null;
+  alarmStopFn=()=>{clearInterval(iv);if(audio){try{audio.pause()}catch(e){}audio=null}};
+  if(S.alarmTone==='custom'&&S.alarmFileData){
+    try{audio=new Audio(S.alarmFileData);audio.loop=true;audio.volume=.9;audio.play().catch(()=>{});}catch(e){audio=null}
+  }
+  if(audio){iv=setInterval(()=>{if(Date.now()>=end)stopAlarm()},500)}
+  else{toneOnce();iv=setInterval(()=>{if(Date.now()>=end)return stopAlarm();toneOnce()},1500)}
+  try{navigator.vibrate&&navigator.vibrate(Array.from({length:Math.ceil(dur/700)},()=>[400,300]).flat())}catch(e){}
+}
+function playSelectedTone(){ringAlarm()}
+
 function hashCode(str){let h=0;for(let i=0;i<str.length;i++)h=((h<<5)-h)+str.charCodeAt(i)|0;return Math.abs(h)}
 function syncNativePlannerState(){
   const payload={
@@ -997,11 +1066,23 @@ async function syncNativeAlarms(){
     }
   }catch(e){}
 }
+async function askNotifPermission(){
+  if(!('Notification' in window))return 'unsupported';
+  if(Notification.permission==='default'){try{await Notification.requestPermission()}catch(e){}}
+  return Notification.permission;
+}
+async function showSystemNotification(title,body){
+  if(!S.notify||!('Notification' in window)||Notification.permission!=='granted')return;
+  const opts={body:body||'',icon:'icon-192.png',badge:'icon-192.png',tag:'bhuvan-'+Date.now(),renotify:true,requireInteraction:true,vibrate:[400,200,400,200,400],silent:false,data:{url:location.href}};
+  try{
+    if('serviceWorker' in navigator){const reg=await navigator.serviceWorker.getRegistration();if(reg){await reg.showNotification(title,opts);return}}
+  }catch(e){console.warn('Service worker notification failed',e)}
+  try{new Notification(title,{body:body||'',icon:'icon-192.png'})}catch(e){}
+}
 function alertUser(title,body){
   banner(title,body);
-  if(S.sound)chime();
-  try{navigator.vibrate&&navigator.vibrate([250,120,250])}catch(e){}
-  if(S.notify&&'Notification' in window&&Notification.permission==='granted'){try{new Notification(title,{body})}catch(e){}}
+  if(S.sound)chime();else{try{navigator.vibrate&&navigator.vibrate([250,120,250])}catch(e){}}
+  showSystemNotification(title,body);
 }
 const titles=T=>T.slice(0,3).map(t=>t.title).join(', ')+(T.length>3?` and ${T.length-3} more`:'');
 
@@ -1087,6 +1168,8 @@ function parseSyllabus(text,defMins){
     if(/:$/.test(line)){subject=line.replace(/:$/,'').trim()||subject;continue}
     line=line.replace(/^([-*\u2022\u00b7]|\d+[.)]|[a-z][.)])\s+/i,'').trim();
     let mins=defMins;
+    const m2=line.match(/[-\u2013\u2014(\[]\s*(\d+)\s*(?:h|hr|hrs|hour|hours)\s*(\d+)\s*(?:m|min|mins|minutes)?\s*[)\]]?\s*$/i);
+    if(m2){mins=parseInt(m2[1],10)*60+parseInt(m2[2],10);line=line.slice(0,m2.index).trim()}
     const m=line.match(/[-\u2013\u2014(\[]\s*(\d+(?:\.\d+)?)\s*(h|hr|hrs|hour|hours|m|min|mins|minutes)\s*[)\]]?\s*$/i);
     if(m){const v=parseFloat(m[1]);mins=/^h/i.test(m[2])?Math.round(v*60):Math.round(v);line=line.slice(0,m.index).trim()}
     if(line)out.push({subject,title:line,mins:Math.max(5,mins)});
@@ -1183,7 +1266,10 @@ function openWidget(){
 }
 function closeWidget(){widgetOn=false;$('#widget').hidden=true;try{wake&&wake.release();wake=null}catch(e){}}
 
+let notifAsked=false;
 document.addEventListener('click',e=>{
+  if(currentUser&&!e.target.closest('[data-a="connectCalendar"],[data-a="syncCalendar"],[data-a="googleLogin"],[data-a="logout"]'))refreshCalendarSilently();
+  if(currentUser&&S.notify&&!notifAsked&&'Notification' in window&&Notification.permission==='default'){notifAsked=true;try{Notification.requestPermission().catch(()=>{})}catch(x){}}
   const el=e.target.closest('[data-a]');if(!el)return;
   unlockAudio();
   const a=el.dataset.a,id=el.dataset.id;
@@ -1198,7 +1284,8 @@ document.addEventListener('click',e=>{
     case 'lockPreview':showLockDisplay();break;
     case 'openLock':openLockScreen();break;
     case 'closeWidget':closeWidget();break;
-    case 'dismissBanner':$('#banner').hidden=true;break;
+    case 'stopAlarm':stopAlarm();break;
+    case 'dismissBanner':stopAlarm();$('#banner').hidden=true;break;
     case 'setMode':S.mode=el.dataset.m;if(S.mode==='auto')autoPlan();save();render();break;
     case 'setupMode':setupMode=el.dataset.m;$$('#sheetHost [data-a=setupMode]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.m===setupMode));break;
     case 'saveSetup':saveSetup();break;
@@ -1219,14 +1306,14 @@ document.addEventListener('click',e=>{
       draft='';addTopics(list);toast(`${list.length} topic${list.length===1?'':'s'} added.`);break;
     }
     case 'addOne':{
-      const title=$('#one-title').value.trim(),sub=$('#one-sub').value.trim()||'General',h=parseFloat($('#one-hrs').value)||S.defHours||1;
+      const title=$('#one-title').value.trim(),sub=$('#one-sub').value.trim()||'General',mm=readDur($('#one-dur'))||Math.round((S.defHours||1)*60);
       if(!title)return toast('Enter the topic name.');
-      addTopics([{subject:sub,title,mins:Math.max(5,Math.round(h*60))}]);toast('Topic added.');break;
+      addTopics([{subject:sub,title,mins:Math.max(5,mm)}]);toast('Topic added.');break;
     }
     case 'autoplan':autoPlan();save();render();toast('Plan rebuilt.');break;
     case 'addSlot':if(S.slots.length<4){S.slots.push({id:uid(),label:'Slot '+(S.slots.length+1),start:'21:00',end:'22:00'});replan()}break;
     case 'delSlot':if(S.slots.length<=1)return toast('Keep at least one study slot.');S.slots=S.slots.filter(s=>s.id!==id);replan();break;
-    case 'testAlert':unlockAudio();alertUser('Test reminder','If you hear a chime and see this bar, alerts are working.');break;
+    case 'testAlert':unlockAudio();askNotifPermission().then(p=>{alertUser('Test reminder','If you hear the alarm and see this in your notification bar, alerts are working.');if(p==='denied')toast('Notifications are blocked. Open Android Settings > Apps > Bhuvan Planner > Notifications and allow them.')});break;
     case 'syncAlarms':syncNativePlannerState();syncNativeAlarms().then(()=>toast('Alarms refreshed.'));break;
     case 'googleLogin':googleLogin();break;
     case 'emailSignIn':emailAuth(false);break;
@@ -1261,7 +1348,8 @@ document.addEventListener('change',e=>{
   const c=el.dataset.c,id=el.dataset.id,t=id&&S.topics.find(x=>x.id===id);
   switch(c){
     case 'setslot':if(t){t.slot=el.value||null;save();render()}break;
-    case 'hours':if(t){const v=parseFloat(el.value);if(v>0){t.mins=Math.max(5,Math.round(v*60));if(S.mode==='auto')autoPlan();save()}render()}break;
+    case 'dur':if(t){const mm=readDur(el.closest('.hm'));if(mm>0){t.mins=Math.max(5,mm);if(S.mode==='auto')autoPlan();save()}render()}break;
+    case 'durDef':{const mm=readDur(el.closest('.hm'));if(mm>0)S.defHours=Math.max(5,mm)/60;replan();break;}
     case 'set':{
       const k=el.dataset.k;let v=el.value;
       if(k==='exam.name')S.exam.name=v.trim();
@@ -1277,6 +1365,7 @@ document.addEventListener('change',e=>{
       replan();break;
     }
     case 'alarmTone':{S.alarmTone=el.value;save();render();break;}
+    case 'alarmSecs':{S.alarmSecs=Math.max(10,parseInt(el.value)||15);save();render();break;}
     case 'lockFlag':{
       const k=el.dataset.k;S.lockDisplay[k]=el.checked;save();render();break;
     }
