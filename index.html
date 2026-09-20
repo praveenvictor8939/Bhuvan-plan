@@ -212,6 +212,8 @@ textarea{min-height:140px;resize:vertical;line-height:1.45;margin-bottom:10px}
 .auth-card{width:min(460px,100%);background:var(--surface);border:1px solid var(--line);border-radius:24px;padding:24px;box-shadow:0 12px 40px rgba(20,26,51,.10)}
 .auth-logo{width:54px;height:54px;border-radius:16px;background:linear-gradient(145deg,var(--hero-a),var(--hero-b));color:#fff;display:grid;place-items:center;font-weight:900;font-size:24px;margin-bottom:14px}
 .auth-card h1{font-family:"Bricolage Grotesque",Figtree,sans-serif;font-size:28px;margin:0 0 6px}.auth-card .f{margin-top:12px}.auth-msg{min-height:22px;color:var(--warn);font-size:13px;margin:8px 0}.auth-actions{display:grid;gap:9px;margin-top:14px}.auth-user{display:flex;align-items:center;gap:10px}.avatar{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;background:var(--field);font-weight:800}.cal-state{padding:10px 12px;border-radius:12px;background:var(--field);font-size:13px;color:var(--mute);margin:8px 0}.cal-state.ok{background:var(--ok-bg);color:var(--ok)}
+[hidden]{display:none!important}
+.auth-msg:not(:empty){background:var(--warn-bg);padding:10px 12px;border-radius:12px;font-size:14px;line-height:1.4}
 </style>
 </head>
 <body>
@@ -247,7 +249,7 @@ let firebaseInit=null, firebaseInitError='', firebaseReady=false, auth=null, cur
 const firebaseConfigured=()=>BHUVAN_FIREBASE_CONFIG.apiKey && !String(BHUVAN_FIREBASE_CONFIG.apiKey).startsWith('PASTE_') && BHUVAN_FIREBASE_CONFIG.projectId && !String(BHUVAN_FIREBASE_CONFIG.projectId).startsWith('PASTE_');
 function externalScript(src){return new Promise((resolve,reject)=>{const old=[...document.scripts].find(x=>x.src===src);if(old)return resolve();const x=document.createElement('script');x.src=src;x.onload=resolve;x.onerror=()=>reject(new Error('Could not load '+src));document.head.appendChild(x)})}
 async function initFirebaseAuth(){
-  if(location.protocol!=='http:'&&location.protocol!=='https:'){renderAuth('This file is opened from your device. Open the hosted link instead: https://study-planner-46401.web.app');return false;}
+  if(location.protocol!=='http:'&&location.protocol!=='https:'){firebaseInitError='This page is open inside a preview or as a downloaded file, so sign-in cannot work here. Open https://praveenvictor8939.github.io/Bhuvan-plan/ in Chrome.';renderAuth(firebaseInitError);return false;}
   if(!firebaseConfigured()){renderAuth('Firebase is not connected yet. Add your Firebase Web App config to this HTML.');return false;}
   try{
     await externalScript('https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js');
@@ -255,7 +257,7 @@ async function initFirebaseAuth(){
     await externalScript('https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js');
     if(!firebase.apps.length)firebase.initializeApp(BHUVAN_FIREBASE_CONFIG);
     auth=firebase.auth();firebaseReady=true;
-    auth.onAuthStateChanged(async u=>{currentUser=u||null;if(currentUser){$('#authGate').hidden=true;$('#view').hidden=false;$('#nav').hidden=false;await loadCloudPlanner();render();await initGoogleCalendar();}else{renderAuth();}});
+    auth.onAuthStateChanged(async u=>{currentUser=u||null;if(currentUser){if(location.hash)history.replaceState(null,'',location.pathname+location.search);$('#authGate').hidden=true;$('#view').hidden=false;$('#nav').hidden=false;await loadCloudPlanner();render();await initGoogleCalendar();}else{renderAuth();}});
     return true;
   }catch(e){console.error(e);firebaseInitError='Firebase could not be loaded ('+String(e&&e.message||e||'network blocked').slice(0,120)+'). Check your internet, turn off ad blockers or data saver, then reload.';renderAuth(firebaseInitError);return false;}
 }
@@ -265,24 +267,72 @@ async function ensureFirebase(){
   renderAuth(firebaseInitError||'Firebase is still loading. Wait a few seconds and try again.');
   return false;
 }
+const AUTH_FIELDS=['authName','authEmail','authPhone','authPassword','authConfirm'];
 function renderAuth(msg=''){
+  const draft={};AUTH_FIELDS.forEach(id=>{const el=document.getElementById(id);if(el)draft[id]=el.value;});
+  const reg=location.hash==='#register';
   $('#authGate').hidden=false;$('#view').hidden=true;$('#nav').hidden=true;
-  $('#authContent').innerHTML=`<div class="auth-card">
-    <div class="auth-logo">B</div><h1>Bhuvan Planner</h1>
-    <p class="mute">Sign in to keep your planner account-based and sync it across devices. You can use email/password or your Google account.</p>
-    ${!firebaseConfigured()?`<div class="card" style="margin:16px 0 0;background:var(--warn-bg);border-color:transparent"><b>Firebase setup required</b><p class="sm" style="margin:5px 0 0">Open Bhuvan Planner from your Firebase Hosting URL, not from a downloaded <code>file://</code> HTML file.</p></div>`:''}
-    <div class="f"><label>Email address</label><input id="authEmail" type="email" autocomplete="email" placeholder="you@example.com"></div>
-    <div class="f"><label>Password</label><input id="authPassword" type="password" autocomplete="current-password" minlength="6" placeholder="Minimum 6 characters"></div>
+  const warn=!firebaseConfigured()?`<div class="card" style="margin:16px 0 0;background:var(--warn-bg);border-color:transparent"><b>Firebase setup required</b><p class="sm" style="margin:5px 0 0">Open Bhuvan Planner from your hosted link, not from a downloaded <code>file://</code> HTML file.</p></div>`:'';
+  const or=`<div style="display:flex;align-items:center;gap:10px;color:var(--mute);font-size:13px;margin:2px 0"><span style="height:1px;background:var(--line);flex:1"></span><span>or</span><span style="height:1px;background:var(--line);flex:1"></span></div>`;
+  const link='background:none;border:none;box-shadow:none;color:var(--mute);font-size:13px';
+  $('#authContent').innerHTML=reg?`<div class="auth-card">
+    <div class="auth-logo">B</div><h1>Create account</h1>
+    <p class="mute">Enter your details to register. Your planner will sync across your devices.</p>
+    ${warn}
     <div class="auth-msg">${esc(msg)}</div>
+    <div class="f"><label>Full name</label><input id="authName" type="text" autocomplete="name" placeholder="Your name"></div>
+    <div class="f"><label>Email address</label><input id="authEmail" type="email" autocomplete="email" placeholder="you@example.com"></div>
+    <div class="f"><label>Phone number</label><input id="authPhone" type="tel" autocomplete="tel" inputmode="tel" placeholder="+91 98765 43210"></div>
+    <div class="f"><label>Password</label><input id="authPassword" type="password" autocomplete="new-password" minlength="6" placeholder="Minimum 6 characters"></div>
+    <div class="f"><label>Confirm password</label><input id="authConfirm" type="password" autocomplete="new-password" minlength="6" placeholder="Type the password again"></div>
+    <div class="auth-actions">
+      <button class="btn pri" data-a="emailRegister">Register</button>
+      <button class="btn" data-a="goLogin" style="${link}">Already have an account? Sign in</button>
+    </div>
+  </div>`:`<div class="auth-card">
+    <div class="auth-logo">B</div><h1>Sign in</h1>
+    <p class="mute">Welcome back. Sign in to open your planner.</p>
+    ${warn}
+    <div class="auth-msg">${esc(msg)}</div>
+    <div class="f"><label>Email address</label><input id="authEmail" type="email" autocomplete="email" placeholder="you@example.com"></div>
+    <div class="f"><label>Password</label><input id="authPassword" type="password" autocomplete="current-password" minlength="6" placeholder="Your password"></div>
     <div class="auth-actions">
       <button class="btn pri" data-a="emailSignIn">Sign in</button>
-      <button class="btn" data-a="emailSignUp">Create account</button>
-      <div style="display:flex;align-items:center;gap:10px;color:var(--mute);font-size:13px;margin:2px 0"><span style="height:1px;background:var(--line);flex:1"></span><span>or</span><span style="height:1px;background:var(--line);flex:1"></span></div>
+      ${or}
       <button class="btn" data-a="googleLogin">Continue with Google</button>
-      <button class="btn" data-a="resetPassword" style="background:none;border:none;box-shadow:none;color:var(--mute);font-size:13px">Forgot password?</button>
+      <button class="btn" data-a="resetPassword" style="${link}">Forgot password?</button>
+      <button class="btn" data-a="goRegister">New here? Create an account</button>
     </div>
     <p class="mute sm" style="margin-top:14px">Google Calendar permission is requested separately after you sign in.</p>
   </div>`;
+  AUTH_FIELDS.forEach(id=>{const el=document.getElementById(id);if(el&&draft[id])el.value=draft[id];});
+  if(msg)window.scrollTo(0,0);
+}
+function authError(e){
+  const m={'auth/invalid-email':'Please enter a valid email address.','auth/email-already-in-use':'This email already has an account. Go back and tap Sign in.','auth/weak-password':'Password must contain at least 6 characters.','auth/operation-not-allowed':'Email/Password sign-in is not enabled in Firebase Authentication.','auth/network-request-failed':'Network error. Check your internet connection and try again.','auth/unauthorized-domain':'This website address is not authorized. Add it in Firebase Authentication > Settings > Authorized domains.','auth/too-many-requests':'Too many attempts. Wait a few minutes and try again.'};
+  return m[e?.code||'']||e?.message||'Registration failed.';
+}
+let registering=false;
+async function registerAccount(){
+  if(registering)return;
+  if(!(await ensureFirebase()))return;
+  const name=($('#authName')?.value||'').trim().replace(/\s+/g,' '),email=($('#authEmail')?.value||'').trim(),phone=($('#authPhone')?.value||'').trim(),pw=$('#authPassword')?.value||'',pw2=$('#authConfirm')?.value||'';
+  const digits=phone.replace(/\D/g,'');
+  if(name.length<2)return renderAuth('Enter your full name.');
+  if(!/^\S+@\S+\.\S+$/.test(email))return renderAuth('Enter a valid email address.');
+  if(!/^\+?[\d\s\-()]+$/.test(phone)||digits.length<7||digits.length>15)return renderAuth('Enter a valid phone number (7 to 15 digits).');
+  if(pw.length<6)return renderAuth('Password must contain at least 6 characters.');
+  if(pw!==pw2)return renderAuth('Passwords do not match.');
+  registering=true;
+  try{
+    const cred=await auth.createUserWithEmailAndPassword(email,pw);
+    try{
+      await cred.user.updateProfile({displayName:name});
+      await firebase.database().ref('users/'+cred.user.uid+'/profile').set({name,email,phone,createdAt:Date.now()});
+    }catch(e){console.warn('Profile save failed',e);toast('Account created, but your name and phone were not saved.');}
+    toast('Welcome, '+name+'!');
+  }catch(e){renderAuth(authError(e));}
+  finally{registering=false;}
 }
 async function emailAuth(create){
   if(!(await ensureFirebase()))return;
@@ -1172,7 +1222,9 @@ document.addEventListener('click',e=>{
     case 'syncAlarms':syncNativePlannerState();syncNativeAlarms().then(()=>toast('Alarms refreshed.'));break;
     case 'googleLogin':googleLogin();break;
     case 'emailSignIn':emailAuth(false);break;
-    case 'emailSignUp':emailAuth(true);break;
+    case 'emailRegister':registerAccount();break;
+    case 'goRegister':location.hash='#register';break;
+    case 'goLogin':location.hash='#login';break;
     case 'resetPassword':resetPassword();break;
     case 'logout':logout();break;
     case 'connectCalendar':connectCalendar();break;
@@ -1349,6 +1401,7 @@ sig=curSig();
 renderAuth('');
 setInterval(()=>{if(currentUser){tickCountdowns();tickStudyTimer();checkQuickReminders();checkSlots()}},1000);
 firebaseInit=initFirebaseAuth();
+window.addEventListener('hashchange',()=>{if(!currentUser)renderAuth();});
 </script>
 </body>
 </html>
