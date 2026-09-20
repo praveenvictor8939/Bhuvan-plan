@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Study Planner</title>
+<title>Bhuvan Planner</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -207,6 +207,15 @@ textarea{min-height:140px;resize:vertical;line-height:1.45;margin-bottom:10px}
 .ld-note{margin-top:30px;font-size:12px;opacity:.55}
 
 </style>
+  <meta name="description" content="Bhuvan Planner - personal study planner with syllabus, exam countdown, progress tracking and reminders.">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/png" href="favicon.png">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <meta name="theme-color" content="#10152f">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Bhuvan Planner">
 </head>
 <body>
 <div id="banner" class="banner" role="alert" hidden></div>
@@ -1132,6 +1141,11 @@ render();
 setInterval(()=>{tickCountdowns();tickStudyTimer();checkQuickReminders();checkSlots()},1000);
 setTimeout(()=>syncNativeAlarms(),1500);
 if(!S.setup)openSetup();
+</script>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js',{scope:'./'}).catch(()=>{}));
+}
 </script>
 </body>
 </html>
