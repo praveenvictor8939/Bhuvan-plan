@@ -266,7 +266,7 @@ async function initFirebaseAuth(){
     if(!firebase.apps.length)firebase.initializeApp(BHUVAN_FIREBASE_CONFIG);
     auth=firebase.auth();firebaseReady=true;
     try{await auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);}catch(e){console.warn('Persistence not set',e);}
-    auth.onAuthStateChanged(async u=>{authResolved=true;currentUser=u||null;if(currentUser){if(location.hash)history.replaceState(null,'',location.pathname+location.search);$('#authGate').hidden=true;$('#view').hidden=false;$('#nav').hidden=false;await loadCloudPlanner();render();await initGoogleCalendar();}else{renderAuth();}});
+    auth.onAuthStateChanged(async u=>{authResolved=true;currentUser=u||null;if(currentUser){if(location.hash)history.replaceState(null,'',location.pathname+location.search);$('#authGate').hidden=true;$('#view').hidden=false;$('#nav').hidden=false;await loadCloudPlanner();render();syncNativeAlarms();updateStatusNotification(true);await initGoogleCalendar();}else{renderAuth();}});
     return true;
   }catch(e){console.error(e);firebaseInitError='Firebase could not be loaded ('+String(e&&e.message||e||'network blocked').slice(0,120)+'). Check your internet, turn off ad blockers or data saver, then reload.';renderAuth(firebaseInitError);return false;}
 }
@@ -307,12 +307,12 @@ function renderAuth(msg=''){
     <div class="f"><label>Password</label><input id="authPassword" type="password" autocomplete="current-password" minlength="6" placeholder="Your password"></div>
     <div class="auth-actions">
       <button class="btn pri" data-a="emailSignIn">Sign in</button>
-      ${or}
-      <button class="btn" data-a="googleLogin">Continue with Google</button>
+      ${isNative()?'':`${or}
+      <button class="btn" data-a="googleLogin">Continue with Google</button>`}
       <button class="btn" data-a="resetPassword" style="${link}">Forgot password?</button>
       <button class="btn" data-a="goRegister">New here? Create an account</button>
     </div>
-    <p class="mute sm" style="margin-top:14px">Google Calendar permission is requested separately after you sign in.</p>
+    ${isNative()?'':`<p class="mute sm" style="margin-top:14px">Google Calendar permission is requested separately after you sign in.</p>`}
   </div>`;
   AUTH_FIELDS.forEach(id=>{const el=document.getElementById(id);if(el&&draft[id])el.value=draft[id];});
   if(msg)window.scrollTo(0,0);
@@ -401,7 +401,7 @@ async function resetPassword(){
   try{await auth.sendPasswordResetEmail(email);renderAuth('Password reset email sent to '+email+'. Check your inbox and spam folder.');}
   catch(e){renderAuth(e?.code==='auth/invalid-email'?'Please enter a valid email address.':(e?.message||'Could not send reset email.'));}
 }
-async function logout(){try{if(auth)await auth.signOut();googleToken=null;googleTokenExp=0;calSave({token:'',exp:0,linked:false})}catch(e){}}
+async function logout(){try{await clearStatusNotification();lastStatus='';if(auth)await auth.signOut();googleToken=null;googleTokenExp=0;calSave({token:'',exp:0,linked:false})}catch(e){}}
 
 /* ================= Cloud planner sync ================= */
 let cloudSaveTimer=null,cloudLoadedUid=null;
@@ -436,6 +436,7 @@ function queueCloudSave(){
 }
 
 async function initGoogleCalendar(){
+  if(isNative())return;
   try{
     if(String(BHUVAN_GOOGLE_CLIENT_ID).startsWith('PASTE_'))return;
     await externalScript('https://accounts.google.com/gsi/client');
@@ -531,6 +532,7 @@ async function syncGoogleCalendar(quiet){
 /* ================= helpers ================= */
 const KEY='studyplanner.v1', DAY=864e5;
 const $=(s,r=document)=>r.querySelector(s);
+const isNative=()=>{try{return !!(window.Capacitor&&window.Capacitor.isNativePlatform&&window.Capacitor.isNativePlatform())}catch(e){return false}};
 const $$=(s,r=document)=>[...r.querySelectorAll(s)];
 const uid=()=>Math.random().toString(36).slice(2,9);
 const pad=n=>String(n).padStart(2,'0');
@@ -555,8 +557,9 @@ const DEFAULTS=()=>({setup:false,mode:'auto',revDays:2,defHours:1,sound:true,not
   front:{header:true,headerText:'',examCountdown:true,schedule:true,dateTime:true},
   lockDisplay:{enabled:false,displayEnabled:true,notifications:true,alarmSound:true,showExam:true,showPercent:true,showToday:true,showNext:true}});
 function load(){try{const r=localStorage.getItem(KEY);return r?JSON.parse(r):null}catch(e){return null}}
-function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){};try{syncNativePlannerState()}catch(e){};queueCloudSave();try{queueCalSync()}catch(e){}}
+function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){};try{syncNativePlannerState()}catch(e){};queueCloudSave();try{queueCalSync()}catch(e){};try{queueStatusUpdate();queueNativeSync()}catch(e){}}
 let S=Object.assign(DEFAULTS(),load()||{});
+if(S.alarmSecs&&![10,15,30,60].includes(Number(S.alarmSecs)))S.alarmSecs=[10,15,30,60].find(x=>x>=Number(S.alarmSecs))||60;
 S.exam=S.exam&&typeof S.exam==='object'?S.exam:DEFAULTS().exam;
 S.slots=Array.isArray(S.slots)&&S.slots.length?S.slots:DEFAULTS().slots;
 S.topics=Array.isArray(S.topics)?S.topics:[];
@@ -868,22 +871,24 @@ function settingsView(){
   let h='<h2>Settings</h2>';
   h+=`<div class="card"><h3>Account & Google Calendar</h3>
     <div class="auth-user"><div class="avatar">${esc((currentUser?.email||'U').slice(0,1).toUpperCase())}</div><div style="flex:1;min-width:0"><b>${esc(currentUser?.email||'Not signed in')}</b><div class="mute sm">Planner account</div></div></div>
-    <div class="cal-state ${calTokenValid()?'ok':''}">${calTokenValid()?'Google Calendar connected':calLinked()?'Google Calendar linked. Tap Reconnect to refresh access.':'Google Calendar not connected'}</div>
+    ${isNative()?'':`<div class="cal-state ${calTokenValid()?'ok':''}">${calTokenValid()?'Google Calendar connected':calLinked()?'Google Calendar linked. Tap Reconnect to refresh access.':'Google Calendar not connected'}</div>
     <div class="row wrap"><button class="btn" data-a="connectCalendar">${calLinked()?'Reconnect Google Calendar':'Connect Google Calendar'}</button><button class="btn" data-a="syncCalendar">Sync planner</button><button class="btn" data-a="logout">Sign out</button></div>
-    <p class="mute sm" style="margin-top:10px">Planner sessions are created in your primary Google Calendar. Sessions already synced stay in Google Calendar and keep alerting you even when this app is closed. Sync only changes events created by Bhuvan Planner.</p>
+    <p class="mute sm" style="margin-top:10px">Planner sessions are created in your primary Google Calendar. Sessions already synced stay in Google Calendar and keep alerting you even when this app is closed. Sync only changes events created by Bhuvan Planner.</p>`}
+    ${isNative()?`<div class="row wrap"><button class="btn" data-a="logout">Sign out</button></div><p class="mute sm" style="margin-top:10px">Study alarms are scheduled on your phone itself, so they ring even when this app is closed.</p>`:''}
   </div>`;
   h+=`<div class="card"><h3>Exam</h3><label class="f">Exam name<input value="${esc(S.exam.name)}" placeholder="e.g. Group 4" data-c="set" data-k="exam.name"></label><label class="f">Exam date and time<input type="datetime-local" value="${esc(S.exam.date)}" data-c="set" data-k="exam.date"></label></div>`;
   h+=`<div class="card"><h3>Study slots</h3><p class="mute sm">These repeat every day. Total: ${fmtDur(S.slots.reduce((a,s)=>a+(at('2000-01-01',s.end)-at('2000-01-01',s.start))/6e4,0))} a day.</p>${S.slots.map(s=>`<div class="slotrow"><input value="${esc(s.label)}" aria-label="Slot name" data-c="slotf" data-id="${s.id}" data-k="label"><input type="time" value="${s.start}" aria-label="Start time" data-c="slotf" data-id="${s.id}" data-k="start"><input type="time" value="${s.end}" aria-label="End time" data-c="slotf" data-id="${s.id}" data-k="end"><button class="icon" data-a="delSlot" data-id="${s.id}" aria-label="Remove ${esc(s.label)}">&times;</button></div>`).join('')}${S.slots.length<4?'<button class="btn" data-a="addSlot">Add a slot</button>':''}
     <label class="f" style="margin-top:14px;max-width:260px">Revision days kept free before the exam<input type="number" min="0" max="30" inputmode="numeric" value="${S.revDays}" data-c="set" data-k="revDays"></label></div>`;
   h+=`<div class="card"><h3>Notifications & alarm</h3>
     <label class="sw">Notifications<input type="checkbox" data-c="flag" data-k="notify" ${S.notify?'checked':''}><span class="tg"></span></label>
+    <label class="sw">Keep status notification (days left and pending topics)<input type="checkbox" data-c="flag" data-k="statusNotif" ${S.statusNotif!==false?'checked':''}><span class="tg"></span></label>
     <label class="sw">Alarm sound<input type="checkbox" data-c="lockFlag" data-k="alarmSound" ${S.lockDisplay.alarmSound!==false?'checked':''}><span class="tg"></span></label>
     <label class="f">Alarm tone<select data-c="alarmTone"><option value="tone1" ${S.alarmTone==='tone1'?'selected':''}>Default tone 1</option><option value="tone2" ${S.alarmTone==='tone2'?'selected':''}>Default tone 2</option><option value="custom" ${S.alarmTone==='custom'?'selected':''}>My audio file</option></select></label>
-    <label class="f">Alarm length<select data-c="alarmSecs">${[10,15,20,30,60].map(n=>`<option value="${n}" ${(Number(S.alarmSecs)||15)===n?'selected':''}>${n} seconds</option>`).join('')}</select></label>
+    <label class="f">Alarm length<select data-c="alarmSecs">${[10,15,30,60].map(n=>`<option value="${n}" ${(Number(S.alarmSecs)||15)===n?'selected':''}>${n} seconds</option>`).join('')}</select></label>
     <div class="row wrap"><button class="btn" data-a="chooseAlarmFile">Choose audio file</button><button class="btn" data-a="testTone">Test selected tone</button><button class="btn" data-a="stopAlarm">Stop alarm</button></div>
     ${S.alarmFileName?`<p class="sm mute">Selected: ${esc(S.alarmFileName)}</p>`:''}
     ${S.notify&&notifyState==='denied'?'<p class="sm" style="color:var(--warn)">Notifications are blocked in browser settings. In the Android APK, allow notification permission when requested.</p>':''}
-    <p class="mute sm">Alerts ring and appear in your phone\'s notification bar while the app is open or recently used. For reminders when the app is fully closed, turn on Google Calendar sync below: Google Calendar rings your study sessions even when this app is closed.</p>
+    <p class="mute sm">${isNative()?'Alarms are scheduled on your phone, so they ring even when the app is closed. In Android Settings set this app\'s Battery to Unrestricted so the phone never blocks them.':'Alerts ring and appear in your phone\'s notification bar while the app is open or recently used. For reminders when the app is fully closed, use Google Calendar sync below.'}</p>
     <button class="btn" data-a="testAlert">Test sound and alert</button><button class="btn" data-a="syncAlarms">Enable / refresh alarms</button></div>`;
   h+=`<div class="card"><h3>Lock screen & display</h3>
     <label class="sw">Lock-screen display<input type="checkbox" data-c="lockFlag" data-k="enabled" ${S.lockDisplay.enabled?'checked':''}><span class="tg"></span></label>
@@ -1034,39 +1039,90 @@ async function nativeNotifications(){
     return n;
   }catch(e){return null}
 }
+const NATIVE_SECS=[10,15,30,60];
+function nativeSecs(){const n=Number(S.alarmSecs)||15;return NATIVE_SECS.find(x=>x>=n)||60}
+function nativeAlarmOn(){return !(S.lockDisplay&&S.lockDisplay.alarmSound===false)}
+function nativeChannel(){return nativeAlarmOn()?'study_alarm_'+nativeSecs():'study_quiet'}
+let nativeChannelsDone='',nativeSyncing=false,nativeSyncAgain=false,nativeSyncTimer=null;
+function nativeNote(id,title,body,when){
+  const note={id,title,body,channelId:nativeChannel()};
+  if(when)note.schedule={at:when,allowWhileIdle:true};
+  if(nativeAlarmOn())note.sound='alarm_'+nativeSecs()+'.wav';
+  return note;
+}
+async function ensureNativeChannels(n){
+  if(!n||!n.createChannel)return;
+  const secs=String(nativeSecs());if(nativeChannelsDone===secs)return;
+  try{
+    await n.createChannel({id:'study_alarm_'+secs,name:'Study alarm ('+secs+' seconds)',description:'Rings for study reminders, even when the app is closed',importance:5,visibility:1,sound:'alarm_'+secs+'.wav',vibration:true,lights:true});
+    await n.createChannel({id:'study_quiet',name:'Study reminders (silent)',description:'Study reminders without sound',importance:4,visibility:1,vibration:true});
+    await n.createChannel({id:'study_status',name:'Study status',description:'Days left and pending topics',importance:2,visibility:1,vibration:false});
+    nativeChannelsDone=secs;
+  }catch(e){console.warn('Channel setup failed',e)}
+}
 async function scheduleNativeAlarm(id,date,time,title,body){
   const n=await nativeNotifications();if(!n||!n.schedule)return false;
   try{
     const when=new Date(`${date}T${time}:00`);if(isNaN(when.getTime())||when<=new Date())return false;
-    await n.schedule({notifications:[{id:Math.abs(Number(id))%2147483000,title,body,schedule:{at:when},sound:(S.lockDisplay&&S.lockDisplay.alarmSound!==false)?'default':undefined}]});
-    return true;
+    await ensureNativeChannels(n);
+    await n.schedule({notifications:[nativeNote(Math.abs(Number(id))%2147483000,title,body,when)]});return true;
   }catch(e){return false}
 }
 async function syncNativeAlarms(){
-  if(S.notify===false)return; const n=await nativeNotifications();if(!n||!n.schedule)return;
+  if(S.notify===false)return;
+  if(nativeSyncing){nativeSyncAgain=true;return}
+  const n=await nativeNotifications();if(!n||!n.schedule)return;
+  nativeSyncing=true;
   try{
-    if(n.cancelAll)await n.cancelAll();
+    await ensureNativeChannels(n);
+    if(n.getPending&&n.cancel){
+      const pend=await n.getPending();
+      const ids=((pend&&pend.notifications)||[]).filter(x=>x.id!==999001).map(x=>({id:x.id}));
+      if(ids.length)await n.cancel({notifications:ids});
+    }
     const now=new Date(),today=dk(now),ex=examDate(),max=ex?dk(ex):dk(new Date(now.getTime()+30*DAY));
-    let count=0;
+    const batch=[];let count=0;
+    const add=(id,date,time,title,body)=>{const when=new Date(`${date}T${time}:00`);if(isNaN(when.getTime())||when<=now)return;batch.push(nativeNote(id,title,body,when))};
     for(const x of S.todayFlex||[]){
       if(x.date<today||x.date>max)continue;
       const t=S.topics.find(t=>t.id===x.id);if(!t||t.done)continue;
-      await scheduleNativeAlarm(100000+count++,x.date,x.time,'Study reminder',`Time to study: ${t.title}`);
+      add(100000+count++,x.date,x.time,'Study reminder',`Time to study: ${t.title}`);
     }
     const end=new Date(max+'T23:59:59');
-    for(let d=new Date(today+'T00:00:00');d<=end;d.setDate(d.getDate()+1)){
+    for(let d=new Date(today+'T00:00:00');d<=end&&batch.length<900;d.setDate(d.getDate()+1)){
       const k=dk(d);
       for(const sl of S.slots){
         if(sl.flexible)continue;
         const T=S.topics.filter(t=>t.slot===`${k}|${sl.id}`&&!t.done);if(!T.length)continue;
-        await scheduleNativeAlarm(200000+count++,k,sl.start,`${sl.label} study time`,titles(T));
-        if(count>500)break;
+        add(200000+count++,k,sl.start,`${sl.label} study time`,titles(T));
+        add(200000+count++,k,sl.end,`${sl.label} slot is over`,'Open the app and tick what you finished.');
       }
-      if(count>500)break;
+    }
+    batch.sort((a,b)=>a.schedule.at-b.schedule.at);
+    const list=batch.slice(0,450);
+    if(list.length)await n.schedule({notifications:list});
+  }catch(e){console.warn('Native alarm sync failed',e)}
+  finally{nativeSyncing=false;if(nativeSyncAgain){nativeSyncAgain=false;syncNativeAlarms()}}
+}
+function queueNativeSync(){if(!isNative())return;clearTimeout(nativeSyncTimer);nativeSyncTimer=setTimeout(()=>syncNativeAlarms(),3000)}
+async function nativeTestAlarm(){
+  const n=await nativeNotifications();
+  if(!n){toast('Notifications are blocked. Allow them in Android Settings > Apps > Bhuvan Planner > Notifications.');return}
+  await ensureNativeChannels(n);
+  try{await n.schedule({notifications:[nativeNote(999002,'Test alarm','This alarm rings on your phone even when the app is closed.',new Date(Date.now()+3000))]});toast('Test alarm in 3 seconds. Try closing the app now.')}
+  catch(e){toast('Could not schedule the test alarm.')}
+}
+async function askExactAlarm(){
+  const n=await nativeNotifications();if(!n)return;
+  try{
+    if(n.checkExactNotificationSetting){
+      const r=await n.checkExactNotificationSetting();
+      if(r&&r.exact_alarm==='denied'&&n.changeExactNotificationSetting){toast('Allow "Alarms and reminders" for this app on the next screen.');await n.changeExactNotificationSetting()}
     }
   }catch(e){}
 }
 async function askNotifPermission(){
+  if(isNative()){const n=await nativeNotifications();return n?'granted':'denied'}
   if(!('Notification' in window))return 'unsupported';
   if(Notification.permission==='default'){try{await Notification.requestPermission()}catch(e){}}
   return Notification.permission;
@@ -1079,8 +1135,47 @@ async function showSystemNotification(title,body){
   }catch(e){console.warn('Service worker notification failed',e)}
   try{new Notification(title,{body:body||'',icon:'icon-192.png'})}catch(e){}
 }
+function statusInfo(){
+  const ex=examDate(),now=new Date(),k=dk(now);
+  const days=ex?Math.max(0,Math.ceil((ex.getTime()-now.getTime())/DAY)):null;
+  const left=S.topics.filter(t=>!t.done);
+  const today=left.filter(t=>t.slot&&t.slot.startsWith(k+'|'));
+  const nx=nextUp();
+  const title=ex?`${(S.exam&&S.exam.name)||'Exam'}: ${days} day${days===1?'':'s'} left`:'Bhuvan Planner';
+  let body=`Today: ${today.length} pending. Total left: ${left.length} topic${left.length===1?'':'s'}.`;
+  if(nx)body+=` Next: ${dayLabel(nx.p.d)} ${fmtT(nx.p.sl.start)} ${nx.p.sl.label}.`;
+  return {title,body};
+}
+let lastStatus='',statusTimer=null;
+function queueStatusUpdate(){clearTimeout(statusTimer);statusTimer=setTimeout(()=>updateStatusNotification(false),2000)}
+async function clearStatusNotification(){
+  try{
+    if(isNative()){const n=await nativeNotifications();if(n&&n.cancel)await n.cancel({notifications:[{id:999001}]});return}
+    const reg=await navigator.serviceWorker.getRegistration();if(!reg)return;
+    (await reg.getNotifications({tag:'bhuvan-status'})).forEach(x=>x.close());
+  }catch(e){}
+}
+async function updateStatusNotification(force){
+  const on=!!currentUser&&S.notify!==false&&S.statusNotif!==false;
+  if(!on){if(lastStatus){lastStatus='';await clearStatusNotification()}return}
+  const {title,body}=statusInfo(),sig=title+'|'+body;
+  if(!force&&sig===lastStatus)return;
+  try{
+    if(isNative()){
+      const n=await nativeNotifications();if(!n||!n.schedule)return;
+      await ensureNativeChannels(n);
+      await n.schedule({notifications:[{id:999001,title,body,ongoing:true,autoCancel:false,channelId:'study_status'}]});
+      lastStatus=sig;return;
+    }
+    if(!('Notification' in window)||Notification.permission!=='granted')return;
+    const reg=await navigator.serviceWorker.getRegistration();if(!reg)return;
+    await reg.showNotification(title,{body,icon:'icon-192.png',badge:'icon-192.png',tag:'bhuvan-status',renotify:false,silent:true,requireInteraction:true,data:{url:location.href}});
+    lastStatus=sig;
+  }catch(e){console.warn('Status notification failed',e)}
+}
 function alertUser(title,body){
   banner(title,body);
+  if(isNative()){try{navigator.vibrate&&navigator.vibrate([250,120,250])}catch(e){}return}
   if(S.sound)chime();else{try{navigator.vibrate&&navigator.vibrate([250,120,250])}catch(e){}}
   showSystemNotification(title,body);
 }
@@ -1269,7 +1364,7 @@ function closeWidget(){widgetOn=false;$('#widget').hidden=true;try{wake&&wake.re
 let notifAsked=false;
 document.addEventListener('click',e=>{
   if(currentUser&&!e.target.closest('[data-a="connectCalendar"],[data-a="syncCalendar"],[data-a="googleLogin"],[data-a="logout"]'))refreshCalendarSilently();
-  if(currentUser&&S.notify&&!notifAsked&&'Notification' in window&&Notification.permission==='default'){notifAsked=true;try{Notification.requestPermission().catch(()=>{})}catch(x){}}
+  if(currentUser&&S.notify&&!isNative()&&!notifAsked&&'Notification' in window&&Notification.permission==='default'){notifAsked=true;try{Notification.requestPermission().catch(()=>{})}catch(x){}}
   const el=e.target.closest('[data-a]');if(!el)return;
   unlockAudio();
   const a=el.dataset.a,id=el.dataset.id;
@@ -1313,8 +1408,8 @@ document.addEventListener('click',e=>{
     case 'autoplan':autoPlan();save();render();toast('Plan rebuilt.');break;
     case 'addSlot':if(S.slots.length<4){S.slots.push({id:uid(),label:'Slot '+(S.slots.length+1),start:'21:00',end:'22:00'});replan()}break;
     case 'delSlot':if(S.slots.length<=1)return toast('Keep at least one study slot.');S.slots=S.slots.filter(s=>s.id!==id);replan();break;
-    case 'testAlert':unlockAudio();askNotifPermission().then(p=>{alertUser('Test reminder','If you hear the alarm and see this in your notification bar, alerts are working.');if(p==='denied')toast('Notifications are blocked. Open Android Settings > Apps > Bhuvan Planner > Notifications and allow them.')});break;
-    case 'syncAlarms':syncNativePlannerState();syncNativeAlarms().then(()=>toast('Alarms refreshed.'));break;
+    case 'testAlert':if(isNative()){nativeTestAlarm();break}unlockAudio();askNotifPermission().then(p=>{alertUser('Test reminder','If you hear the alarm and see this in your notification bar, alerts are working.');if(p==='denied')toast('Notifications are blocked. Open Android Settings > Apps > Bhuvan Planner > Notifications and allow them.')});break;
+    case 'syncAlarms':syncNativePlannerState();(isNative()?askExactAlarm():Promise.resolve()).then(()=>syncNativeAlarms()).then(()=>{updateStatusNotification(true);toast('Alarms refreshed.')});break;
     case 'googleLogin':googleLogin();break;
     case 'emailSignIn':emailAuth(false);break;
     case 'emailRegister':registerAccount();break;
@@ -1325,7 +1420,7 @@ document.addEventListener('click',e=>{
     case 'connectCalendar':connectCalendar();break;
     case 'syncCalendar':syncGoogleCalendar();break;
     case 'chooseAlarmFile':$('#alarmFile').click();break;
-    case 'testTone':unlockAudio();playSelectedTone();break;
+    case 'testTone':if(isNative()){nativeTestAlarm();break}unlockAudio();playSelectedTone();break;
     case 'deleteSyllabus':
       if(armed==='deleteSyllabus'){
         armed=null;
@@ -1365,7 +1460,7 @@ document.addEventListener('change',e=>{
       replan();break;
     }
     case 'alarmTone':{S.alarmTone=el.value;save();render();break;}
-    case 'alarmSecs':{S.alarmSecs=Math.max(10,parseInt(el.value)||15);save();render();break;}
+    case 'alarmSecs':{S.alarmSecs=Math.max(10,parseInt(el.value)||15);save();render();if(isNative())syncNativeAlarms();break;}
     case 'lockFlag':{
       const k=el.dataset.k;S.lockDisplay[k]=el.checked;save();render();break;
     }
@@ -1378,10 +1473,11 @@ document.addEventListener('change',e=>{
     case 'flag':{
       const k=el.dataset.k;S[k]=el.checked;
       if(k==='notify'&&el.checked){
-        if(!('Notification' in window)){S.notify=false;toast('Notifications are not supported here. Sound and on-screen alerts still work.')}
+        if(isNative()){nativeNotifications().then(n=>{if(!n){S.notify=false;toast('Notifications are blocked. Allow them in Android Settings > Apps > Bhuvan Planner.');save();render()}})}
+        else if(!('Notification' in window)){S.notify=false;toast('Notifications are not supported here. Sound and on-screen alerts still work.')}
         else{try{Notification.requestPermission().then(p=>{if(p!=='granted'){S.notify=false;toast('Notifications are blocked. Sound and on-screen alerts still work.')}save();render()}).catch(()=>{S.notify=false;save();render()})}catch(err){S.notify=false}}
       }
-      save();render();if(k==='notify'&&el.checked)syncNativeAlarms();break;
+      save();render();if(k==='notify'&&el.checked)syncNativeAlarms();if(k==='statusNotif'||k==='notify')updateStatusNotification(true);break;
     }
   }
 });
@@ -1498,8 +1594,10 @@ sig=curSig();
 $('#authGate').hidden=false;$('#authContent').innerHTML='<div class="auth-card" style="text-align:center"><div class="auth-logo" style="margin:0 auto 14px">B</div><h1>Bhuvan Planner</h1><p class="mute">Loading your planner…</p></div>';
 setInterval(()=>{if(currentUser){tickCountdowns();tickStudyTimer();checkQuickReminders();checkSlots()}},1000);
 firebaseInit=initFirebaseAuth();
-if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost')){window.addEventListener('load',()=>{navigator.serviceWorker.register('sw.js').catch(e=>console.warn('Service worker not registered',e));});}
+if('serviceWorker' in navigator&&!isNative()&&(location.protocol==='https:'||location.hostname==='localhost')){window.addEventListener('load',()=>{navigator.serviceWorker.register('sw.js').catch(e=>console.warn('Service worker not registered',e));});}
 
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)queueStatusUpdate()});
+setInterval(()=>{if(currentUser)updateStatusNotification(false)},600000);
 window.addEventListener('hashchange',()=>{if(!currentUser&&authResolved)renderAuth();});
 setTimeout(()=>{if(!authResolved&&!currentUser)renderAuth(firebaseInitError||'Still connecting. Check your internet connection and reload.');},12000);
 </script>

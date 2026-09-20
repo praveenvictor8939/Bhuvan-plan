@@ -1,0 +1,8 @@
+{
+  "appId": "com.praveen.bhuvanplanner",
+  "appName": "Bhuvan Planner",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  }
+}
