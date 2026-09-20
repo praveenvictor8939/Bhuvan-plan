@@ -195,6 +195,17 @@ textarea{min-height:140px;resize:vertical;line-height:1.45;margin-bottom:10px}
 .w-next span{font-size:14.5px;opacity:.9}
 .w-tip{font-size:13px;opacity:.75;margin:0}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+.ld-screen{min-height:100vh;box-sizing:border-box;padding:54px 28px 36px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;background:linear-gradient(160deg,#080b18,#111a3a);color:#fff}
+.ld-title{font-size:28px;font-weight:800;margin-bottom:34px}
+.ld-count{display:flex;align-items:baseline;gap:7px;font-size:46px;font-weight:900;letter-spacing:-2px}
+.ld-count span{font-size:17px;font-weight:700;opacity:.75;margin-right:8px}
+.ld-pct{margin:30px 0;font-size:58px;font-weight:900}
+.ld-pct small{display:block;font-size:14px;font-weight:600;opacity:.7;letter-spacing:0}
+.ld-line{width:min(560px,90%);display:flex;justify-content:space-between;gap:18px;padding:16px 0;border-top:1px solid rgba(255,255,255,.16);text-align:left}
+.ld-line span{opacity:.85;text-align:right}
+.ld-note{margin-top:30px;font-size:12px;opacity:.55}
+
 </style>
 </head>
 <body>
@@ -226,18 +237,25 @@ const dayLabel=k=>{const t=new Date(),tk=dk(t),nk=dk(new Date(t.getFullYear(),t.
 
 /* ================= state ================= */
 function defaultExam(){const d=new Date(Date.now()+30*DAY);return `${dk(d)}T10:00`}
-const DEFAULTS=()=>({setup:false,mode:'auto',revDays:2,defHours:1,sound:true,notify:false,
+const DEFAULTS=()=>({setup:false,mode:'auto',revDays:2,defHours:1,sound:true,notify:true,
   exam:{name:'',date:defaultExam()},
   slots:[{id:'m',label:'Morning',start:'06:00',end:'08:00'},{id:'e',label:'Evening',start:'18:00',end:'20:00'}],
-  topics:[],log:{},todayFlex:[]});
+  topics:[],log:{},todayFlex:[],
+  front:{header:true,headerText:'',examCountdown:true,schedule:true,dateTime:true},
+  lockDisplay:{enabled:false,displayEnabled:true,notifications:true,alarmSound:true,showExam:true,showPercent:true,showToday:true,showNext:true}});
 function load(){try{const r=localStorage.getItem(KEY);return r?JSON.parse(r):null}catch(e){return null}}
-function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}}
+function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){};try{syncNativePlannerState()}catch(e){}}
 let S=Object.assign(DEFAULTS(),load()||{});
 S.exam=S.exam&&typeof S.exam==='object'?S.exam:DEFAULTS().exam;
 S.slots=Array.isArray(S.slots)&&S.slots.length?S.slots:DEFAULTS().slots;
 S.topics=Array.isArray(S.topics)?S.topics:[];
 S.log=S.log&&typeof S.log==='object'?S.log:{};
 S.todayFlex=Array.isArray(S.todayFlex)?S.todayFlex:[];
+S.front=S.front&&typeof S.front==='object'?S.front:{};
+S.front=Object.assign(DEFAULTS().front,S.front);
+S.lockDisplay=Object.assign(DEFAULTS().lockDisplay,S.lockDisplay);
+S.lockDisplay.notifications=S.lockDisplay.notifications!==false;
+S.lockDisplay.alarmSound=S.lockDisplay.alarmSound!==false;
 let tab='today',draft='',armed=null,setupOpen=false,reviewOpen=false,reviewKeys=[],setupMode='auto',widgetOn=false,wake=null,sig='',importPreview=[],flexTopicId=null;
 let studyTimer={id:null,end:0};
 let reminderLog={};
@@ -335,6 +353,7 @@ function fmtMs(ms,f){
   return `<b>${pad(h)}</b><i>h</i><b>${pad(m)}</b><i>m</i><b>${pad(s)}</b><i>s</i>`;
 }
 function tickCountdowns(){
+  updateLockDisplay();
   $$('[data-until]').forEach(el=>{
     const v=fmtMs(+el.dataset.until-Date.now(),el.dataset.fmt||'dhm');
     if(el._v!==v){el._v=v;el.innerHTML=v}
@@ -365,7 +384,7 @@ function hero(){
   }
   const tp=ld.tot?Math.round(ld.dn/ld.tot*100):0;
   return `<section class="hero" aria-label="Exam countdown">
-    <div class="hero-top"><div class="hero-name">${esc(S.exam.name)||'Your exam'}</div><button class="pill" data-a="widget">Widget view</button></div>
+    <div class="hero-top"><div class="hero-name">${esc(S.exam.name)||'Your exam'}</div></div>
     <div class="hero-main"><div>${big}</div><div class="ringbox">${ring(st.pct,84,9)}<div class="ringcap">done</div></div></div>
     ${line?`<p class="hero-line">${line}</p>`:''}
     ${ld.tot?`<div class="today"><div class="today-t">Today: ${fmtDur(ld.dn)} finished of ${fmtDur(ld.tot)} planned</div><div class="bar" role="progressbar" aria-valuenow="${tp}" aria-valuemin="0" aria-valuemax="100"><i style="width:${tp}%"></i></div></div>`:''}
@@ -479,6 +498,7 @@ function assignFlexibleToday(){
   S.todayFlex.push({id:t.id,date,time:hm});
   t.flexTime=hm;
   save();closeSheet();flexTopicId=null;render();
+  scheduleNativeAlarm(300000+hashCode(`${t.id}|${date}|${hm}`),date,hm,'Study reminder',`Time to study: ${t.title}`);
   toast(`Temporary plan added for ${dayLabel(date)} at ${fmtT(hm)}. Regular exam plan unchanged.`);
 }
 function planView(){
@@ -538,13 +558,21 @@ function settingsView(){
   h+=`<div class="card"><h3>Exam</h3><label class="f">Exam name<input value="${esc(S.exam.name)}" placeholder="e.g. Group 4" data-c="set" data-k="exam.name"></label><label class="f">Exam date and time<input type="datetime-local" value="${esc(S.exam.date)}" data-c="set" data-k="exam.date"></label></div>`;
   h+=`<div class="card"><h3>Study slots</h3><p class="mute sm">These repeat every day. Total: ${fmtDur(S.slots.reduce((a,s)=>a+(at('2000-01-01',s.end)-at('2000-01-01',s.start))/6e4,0))} a day.</p>${S.slots.map(s=>`<div class="slotrow"><input value="${esc(s.label)}" aria-label="Slot name" data-c="slotf" data-id="${s.id}" data-k="label"><input type="time" value="${s.start}" aria-label="Start time" data-c="slotf" data-id="${s.id}" data-k="start"><input type="time" value="${s.end}" aria-label="End time" data-c="slotf" data-id="${s.id}" data-k="end"><button class="icon" data-a="delSlot" data-id="${s.id}" aria-label="Remove ${esc(s.label)}">&times;</button></div>`).join('')}${S.slots.length<4?'<button class="btn" data-a="addSlot">Add a slot</button>':''}
     <label class="f" style="margin-top:14px;max-width:260px">Revision days kept free before the exam<input type="number" min="0" max="30" inputmode="numeric" value="${S.revDays}" data-c="set" data-k="revDays"></label></div>`;
-  h+=`<div class="card"><h3>Reminders</h3>
-    <label class="sw">Sound at slot start and end<input type="checkbox" data-c="flag" data-k="sound" ${S.sound?'checked':''}><span class="tg"></span></label>
-    <label class="sw">Phone notifications<input type="checkbox" data-c="flag" data-k="notify" ${S.notify?'checked':''}><span class="tg"></span></label>
-    ${S.notify&&notifyState==='denied'?'<p class="sm" style="color:var(--warn)">Notifications are blocked in your browser settings.</p>':''}
-    <p class="mute sm">Reminders work while this page is open. Keep it open in your browser or added to your home screen, with the phone unmuted.</p>
-    <button class="btn" data-a="testAlert">Test sound and alert</button></div>`;
-  h+=`<div class="card"><h3>Front screen</h3><p class="mute sm">Widget view shows the countdown, pending percentage and your next slot in large type, and keeps the screen awake. Take a screenshot to use it as a lock screen or home screen picture.</p><div class="row wrap"><button class="btn mk" data-a="widget">Open widget view</button></div><p class="mute sm" style="margin:10px 0 0">To open this app like an app: in your browser menu choose Add to Home Screen.</p></div>`;
+  h+=`<div class="card"><h3>Notifications & alarm</h3>
+    <label class="sw">Notifications<input type="checkbox" data-c="flag" data-k="notify" ${S.notify?'checked':''}><span class="tg"></span></label>
+    <label class="sw">Alarm sound<input type="checkbox" data-c="lockFlag" data-k="alarmSound" ${S.lockDisplay.alarmSound!==false?'checked':''}><span class="tg"></span></label>
+    ${S.notify&&notifyState==='denied'?'<p class="sm" style="color:var(--warn)">Notifications are blocked in browser settings. In the Android APK, allow notification permission when requested.</p>':''}
+    <p class="mute sm">Notifications are scheduled from your study dates and times. The Android APK should use native local notifications so reminders continue when the app is closed or the screen is locked.</p>
+    <button class="btn" data-a="testAlert">Test sound and alert</button><button class="btn" data-a="syncAlarms">Enable / refresh alarms</button></div>`;
+  h+=`<div class="card"><h3>Lock screen & display</h3>
+    <label class="sw">Lock-screen display<input type="checkbox" data-c="lockFlag" data-k="enabled" ${S.lockDisplay.enabled?'checked':''}><span class="tg"></span></label>
+    <label class="sw">App display / widget<input type="checkbox" data-c="lockFlag" data-k="displayEnabled" ${S.lockDisplay.displayEnabled!==false?'checked':''}><span class="tg"></span></label>
+    <label class="sw">Show remaining exam time<input type="checkbox" data-c="lockFlag" data-k="showExam" ${S.lockDisplay.showExam?'checked':''}><span class="tg"></span></label>
+    <label class="sw">Show completion percentage<input type="checkbox" data-c="lockFlag" data-k="showPercent" ${S.lockDisplay.showPercent?'checked':''}><span class="tg"></span></label>
+    <label class="sw">Show today's task/progress<input type="checkbox" data-c="lockFlag" data-k="showToday" ${S.lockDisplay.showToday?'checked':''}><span class="tg"></span></label>
+    <label class="sw">Show next study task<input type="checkbox" data-c="lockFlag" data-k="showNext" ${S.lockDisplay.showNext?'checked':''}><span class="tg"></span></label>
+    <div class="row wrap"><button class="btn mk" data-a="lockPreview">Preview lock display</button><button class="btn" data-a="widget">Open widget</button></div>
+    <p class="mute sm">After the Android APK is installed, these settings are intended to control the native lock-screen notification/display layer. The remaining exam time and completion percentage should be recalculated from the app's current data.</p></div>`;
   h+=`<div class="card"><h3>Data</h3><p class="mute sm">Everything is saved on this device only.</p>
     <div class="btns"><button class="btn${armed==='deleteSyllabus'?' danger':''}" data-a="deleteSyllabus">${armed==='deleteSyllabus'?'Tap again to delete syllabus':'Delete syllabus'}</button>
     <button class="btn${armed==='reset'?' danger':''}" data-a="resetAll">${armed==='reset'?'Tap again to erase everything':'Erase all data'}</button></div>
@@ -577,15 +605,45 @@ function backupView(){
 }
 function renderWidget(){
   if(!widgetOn)return;
-  const st=stats(),ex=examDate(),nx=nextUp(),live=ex&&ex>Date.now();
+  const st=stats(),ex=examDate(),nx=nextUp(),live=ex&&ex>Date.now(),f=S.front||DEFAULTS().front;
+  const header=f.header?(f.headerText.trim()||(S.exam.name||'Bhuvan Planner')):'';
+  const countdown=f.examCountdown&&live?`<div class="w-cd" data-until="${ex.getTime()}" data-fmt="dhm"></div><p class="w-line">Exam: ${esc(dayLabel(dk(ex)))} ${f.dateTime?esc(fmtT(`${pad(ex.getHours())}:${pad(ex.getMinutes())}`)):''}</p>`:'';
+  const sched=f.schedule&&nx?`<div class="w-next"><b>Next study: ${esc(slotLabel(nx.k))} to ${fmtT(nx.p.sl.end)}</b><span>${nx.T.slice(0,3).map(t=>esc(t.title)).join(', ')}${nx.T.length>3?' and '+(nx.T.length-3)+' more':''}</span></div>`:'';
   $('#widget').innerHTML=`<button class="w-x" data-a="closeWidget">Close</button><div class="w-body">
-    <div class="w-name">${esc(S.exam.name)||'Your exam'}</div>
-    ${live?`<div class="w-cd" data-until="${ex.getTime()}" data-fmt="dhm"></div><p class="w-line">You have <b data-until="${ex.getTime()}" data-fmt="words"></b> left</p>`:'<div class="w-cd" style="font-size:34px">'+(ex?'Exam time':'Set exam date')+'</div>'}
+    ${header?`<div class="w-name">${esc(header)}</div>`:''}
+    ${countdown || (!f.examCountdown?'<div class="w-cd" style="font-size:30px">Study Planner</div>':'')}
     <div class="w-ring">${ring(st.pct,190,18)}</div>
     <p class="w-pend">${st.n?`<span class="mark">${st.pend}% pending</span>`:'No topics yet'}</p>
-    ${nx?`<div class="w-next"><b>Next: ${esc(slotLabel(nx.k))} to ${fmtT(nx.p.sl.end)}</b><span>${nx.T.slice(0,3).map(t=>esc(t.title)).join(', ')}${nx.T.length>3?' and '+(nx.T.length-3)+' more':''}</span></div>`:''}
-    <p class="w-tip">Screenshot this screen to use it as your wallpaper.</p></div>`;
+    ${sched}
+    <p class="w-tip">Display screen / lock-screen style view. Use the phone's screenshot or save-screen option if you want to set it as your lock screen.</p></div>`;
 }
+function openLockScreen(){
+  widgetOn=true;$('#widget').hidden=false;renderWidget();tickCountdowns();
+  try{navigator.wakeLock&&navigator.wakeLock.request('screen').then(w=>wake=w).catch(()=>{})}catch(e){}
+}
+
+function lockDisplayData(){
+  const f=S.lockDisplay||DEFAULTS().lockDisplay, st=stats(), ex=examDate(), nx=nextUp();
+  const now=new Date(), diff=ex?Math.max(0,ex-now):0;
+  const days=Math.floor(diff/86400000), hrs=Math.floor((diff%86400000)/3600000), mins=Math.floor((diff%3600000)/60000);
+  return {f,st,ex,nx,days,hrs,mins};
+}
+function showLockDisplay(){
+  const d=lockDisplayData(),f=d.f;
+  const exam=f.showExam&&d.ex?`<div class="ld-count"><b>${d.days}</b><span>d</span><b>${d.hrs}</b><span>h</span><b>${d.mins}</b><span>m</span></div>`:'';
+  const pct=f.showPercent?`<div class="ld-pct">${d.st.pct}%<small>completed</small></div>`:'';
+  const today=f.showToday?`<div class="ld-line"><b>Today</b><span>${d.st.n?`${d.st.nd} of ${d.st.n} topics completed`:'No topics added yet'}</span></div>`:'';
+  const next=f.showNext&&d.nx?`<div class="ld-line"><b>Next study</b><span>${esc(d.nx.T.slice(0,3).map(t=>t.title).join(', '))}</span></div>`:'';
+  const title=esc((S.front&&S.front.headerText)||S.exam.name||'Bhuvan Planner');
+  $('#widget').innerHTML=`<button class="w-x" data-a="closeWidget">Close</button>
+    <div class="ld-screen"><div class="ld-title">${title}</div>${exam}${pct}${today}${next}
+    <div class="ld-note">Bhuvan Planner • updates from your study plan</div></div>`;
+  $('#widget').hidden=false; widgetOn=true;
+}
+function updateLockDisplay(){
+  if(S.lockDisplay&&S.lockDisplay.enabled&&widgetOn) showLockDisplay();
+}
+
 function render(){
   $('#view').innerHTML=tab==='today'?todayView():tab==='plan'?planView():tab==='progress'?progressView():tab==='backup'?backupView():settingsView();
   $('#nav').innerHTML=TABS.map(([id,l,ic])=>`<button data-a="tab" data-t="${id}"${tab===id?' aria-current="page"':''}><span class="ic"><svg viewBox="0 0 24 24" aria-hidden="true">${ic}</svg></span>${l}</button>`).join('');
@@ -623,6 +681,62 @@ function chime(){
     }
   }catch(e){}
 }
+function hashCode(str){let h=0;for(let i=0;i<str.length;i++)h=((h<<5)-h)+str.charCodeAt(i)|0;return Math.abs(h)}
+function syncNativePlannerState(){
+  const payload={
+    type:'bhuvan_planner_state',
+    exam:S.exam,
+    topics:S.topics,
+    todayFlex:S.todayFlex,
+    progress:stats(),
+    lockDisplay:S.lockDisplay,
+    notifications:{enabled:S.notify,sound:S.sound,alarmSound:S.lockDisplay.alarmSound!==false},
+    nextStudy:nextUp()
+  };
+  try{window.Capacitor?.Plugins?.BhuvanPlanner?.syncState?.(payload)}catch(e){}
+  try{window.AndroidBhuvanPlanner?.syncState?.(JSON.stringify(payload))}catch(e){}
+}
+async function nativeNotifications(){
+  try{
+    const p=window.Capacitor;
+    const n=p&&p.Plugins&&(p.Plugins.LocalNotifications||p.Plugins.LocalNotification);
+    if(!n)return null;
+    if(n.requestPermissions){const r=await n.requestPermissions();if(r.display&&r.display!=='granted')return null;}
+    return n;
+  }catch(e){return null}
+}
+async function scheduleNativeAlarm(id,date,time,title,body){
+  const n=await nativeNotifications();if(!n||!n.schedule)return false;
+  try{
+    const when=new Date(`${date}T${time}:00`);if(isNaN(when.getTime())||when<=new Date())return false;
+    await n.schedule({notifications:[{id:Math.abs(Number(id))%2147483000,title,body,schedule:{at:when},sound:(S.lockDisplay&&S.lockDisplay.alarmSound!==false)?'default':undefined}]});
+    return true;
+  }catch(e){return false}
+}
+async function syncNativeAlarms(){
+  if(S.notify===false)return; const n=await nativeNotifications();if(!n||!n.schedule)return;
+  try{
+    if(n.cancelAll)await n.cancelAll();
+    const now=new Date(),today=dk(now),ex=examDate(),max=ex?dk(ex):dk(new Date(now.getTime()+30*DAY));
+    let count=0;
+    for(const x of S.todayFlex||[]){
+      if(x.date<today||x.date>max)continue;
+      const t=S.topics.find(t=>t.id===x.id);if(!t||t.done)continue;
+      await scheduleNativeAlarm(100000+count++,x.date,x.time,'Study reminder',`Time to study: ${t.title}`);
+    }
+    const end=new Date(max+'T23:59:59');
+    for(let d=new Date(today+'T00:00:00');d<=end;d.setDate(d.getDate()+1)){
+      const k=dk(d);
+      for(const sl of S.slots){
+        if(sl.flexible)continue;
+        const T=S.topics.filter(t=>t.slot===`${k}|${sl.id}`&&!t.done);if(!T.length)continue;
+        await scheduleNativeAlarm(200000+count++,k,sl.start,`${sl.label} study time`,titles(T));
+        if(count>500)break;
+      }
+      if(count>500)break;
+    }
+  }catch(e){}
+}
 function alertUser(title,body){
   banner(title,body);
   if(S.sound)chime();
@@ -654,7 +768,7 @@ function checkSlots(){
     if(dirty)save();
     openReview(rv);return;
   }
-  if(dirty)save();
+  if(dirty){save();syncNativeAlarms();}
   if(dirty||changed)render();
 }
 function openReview(list){
@@ -699,6 +813,7 @@ function saveSetup(){
   S.exam={name,date};
   S.slots[0]={...S.slots[0],start:ms,end:me};S.slots[1]={...S.slots[1],start:es,end:ee};
   S.mode=setupMode;S.setup=true;save();
+  syncNativeAlarms();
   setupOpen=false;closeSheet();tab='plan';render();
   toast('Saved. Now add your syllabus.');
 }
@@ -749,6 +864,7 @@ function addTopics(list){
   list.forEach(x=>S.topics.push({id:uid(),subject:x.subject||'General',title:x.title,mins:x.mins,done:false,doneAt:null,slot:null,moved:0}));
   if(S.mode==='auto')autoPlan();
   save();render();
+  syncNativeAlarms();
 }
 function openImportPreview(list,sourceName){
   importPreview=list.map((x,i)=>({...x,_i:i}));
@@ -819,6 +935,8 @@ document.addEventListener('click',e=>{
       if(armed===id){armed=null;S.topics=S.topics.filter(t=>t.id!==id);if(S.mode==='auto')autoPlan();save();render();toast('Topic removed.')}
       else arm(id);break;
     case 'widget':openWidget();break;
+    case 'lockPreview':showLockDisplay();break;
+    case 'openLock':openLockScreen();break;
     case 'closeWidget':closeWidget();break;
     case 'dismissBanner':$('#banner').hidden=true;break;
     case 'setMode':S.mode=el.dataset.m;if(S.mode==='auto')autoPlan();save();render();break;
@@ -849,6 +967,7 @@ document.addEventListener('click',e=>{
     case 'addSlot':if(S.slots.length<4){S.slots.push({id:uid(),label:'Slot '+(S.slots.length+1),start:'21:00',end:'22:00'});replan()}break;
     case 'delSlot':if(S.slots.length<=1)return toast('Keep at least one study slot.');S.slots=S.slots.filter(s=>s.id!==id);replan();break;
     case 'testAlert':unlockAudio();alertUser('Test reminder','If you hear a chime and see this bar, alerts are working.');break;
+    case 'syncAlarms':syncNativePlannerState();syncNativeAlarms().then(()=>toast('Alarms refreshed.'));break;
     case 'deleteSyllabus':
       if(armed==='deleteSyllabus'){
         armed=null;
@@ -886,13 +1005,22 @@ document.addEventListener('change',e=>{
       else{const old=s[k];s[k]=el.value;if(!s.start||!s.end||s.end<=s.start){s[k]=old;toast('A slot must end after it starts.');render();return}}
       replan();break;
     }
+    case 'lockFlag':{
+      const k=el.dataset.k;S.lockDisplay[k]=el.checked;save();render();break;
+    }
+        case 'frontFlag':{
+      const k=el.dataset.k;S.front[k]=el.checked;save();render();break;
+    }
+    case 'frontText':{
+      S.front.headerText=el.value;save();render();break;
+    }
     case 'flag':{
       const k=el.dataset.k;S[k]=el.checked;
       if(k==='notify'&&el.checked){
         if(!('Notification' in window)){S.notify=false;toast('Notifications are not supported here. Sound and on-screen alerts still work.')}
         else{try{Notification.requestPermission().then(p=>{if(p!=='granted'){S.notify=false;toast('Notifications are blocked. Sound and on-screen alerts still work.')}save();render()}).catch(()=>{S.notify=false;save();render()})}catch(err){S.notify=false}}
       }
-      save();render();break;
+      save();render();if(k==='notify'&&el.checked)syncNativeAlarms();break;
     }
   }
 });
@@ -1002,6 +1130,7 @@ cleanupFlexPlans();
 sig=curSig();
 render();
 setInterval(()=>{tickCountdowns();tickStudyTimer();checkQuickReminders();checkSlots()},1000);
+setTimeout(()=>syncNativeAlarms(),1500);
 if(!S.setup)openSetup();
 </script>
 </body>
