@@ -1,6 +1,6 @@
 // Bhuvan Planner service worker: offline shell for the app itself.
 // Firebase, Google and other websites are never intercepted, so login keeps working normally.
-const CACHE='bhuvan-planner-v1';
+const CACHE='bhuvan-planner-v2';
 const SHELL=['./','index.html','manifest.json','icon-192.png','icon-512.png'];
 self.addEventListener('install',e=>{
   e.waitUntil(caches.open(CACHE).then(c=>c.addAll(SHELL)).then(()=>self.skipWaiting()));
@@ -19,10 +19,19 @@ self.addEventListener('fetch',e=>{
   // Other same-site files: saved copy first, then network.
   e.respondWith(caches.match(req).then(hit=>hit||fetch(req).then(res=>{if(res.ok){const copy=res.clone();caches.open(CACHE).then(c=>c.put(req,copy));}return res;})));
 });
+// Tapping a notification opens (or returns to) the app.
+self.addEventListener('notificationclick',e=>{
+  e.notification.close();
+  const target=(e.notification.data&&e.notification.data.url)||'./';
+  e.waitUntil(self.clients.matchAll({type:'window',includeUncontrolled:true}).then(list=>{
+    for(const c of list){if('focus' in c)return c.focus();}
+    return self.clients.openWindow(target);
+  }));
+});
 // Lets PWABuilder detect these features; the planner does not use them yet.
 self.addEventListener('sync',()=>{});
 self.addEventListener('periodicsync',()=>{});
 self.addEventListener('push',e=>{
   let d={};try{d=e.data?e.data.json():{}}catch(x){}
-  e.waitUntil(self.registration.showNotification(d.title||'Bhuvan Planner',{body:d.body||'',icon:'icon-192.png'}));
+  e.waitUntil(self.registration.showNotification(d.title||'Bhuvan Planner',{body:d.body||'',icon:'icon-192.png',badge:'icon-192.png',vibrate:[400,200,400]}));
 });
